@@ -965,27 +965,18 @@ jobs:
       # fails the job - while the UNVERIFIED upload below still keeps the artifact, because a
       # component that did not build must never also cost us the 2.6 hours that did.
       - name: Any package or tool that failed to build?
+        # `if: always()` on purpose: when make aborts, the error markers are the only thing that
+        # names WHICH packages failed, and that diagnosis is exactly what a failed run must leave
+        # behind. On a successful build this is the verdict make's exit code does not give us.
+        #
+        # The logic lives in firmware/tools/build_completeness.py, not here: that is where it can
+        # be tested, and the first YAML version of it searched with -maxdepth 6 for an object that
+        # sits 7 levels deep - it would have failed a perfectly good build after 4.3 hours.
+        if: always()
         run: |
           set -ux
           SRC=omr-work/omr/gl-mt3000/6.12/source
-          FAILED=0
-          for marker in "$SRC/logs/package/error.txt" "$SRC/logs/tools/error.txt"; do
-            if [ -f "$marker" ]; then
-              FAILED=1
-              echo "=== ${marker#$SRC/} ==="
-              cat "$marker"
-            fi
-          done
-          if [ "$FAILED" -ne 0 ]; then
-            echo "BUILD_COMPLETENESS=FAIL (make exited 0 with IGNORE_ERRORS=m; the image is missing these)"
-            exit 1
-          fi
-          echo "BUILD_COMPLETENESS=OK (no package or tool failed)"
-          # The BPF schedulers are this project's core capability: prove they are in the image
-          # tree instead of trusting make's exit code.
-          SCHED="$(find "$SRC/build_dir" -path '*mptcp-bpf-*' -name 'mptcp_bpf_*.o' 2>/dev/null | wc -l)"
-          echo "bpf_scheduler_objects=$SCHED"
-          [ "$SCHED" -ge 6 ] || { echo "BPF_SCHEDULERS=FAIL found=$SCHED (expected >= 6)"; exit 1; }
+          python3 firmware/tools/build_completeness.py --src "$SRC" --allow-no-build-log
       # Pack the package cache even when the build FAILED (if: always()): the objects that did
       # compile are the most valuable thing a failed run can leave behind, and today a failure
       # at 2h40m throws all of them away. `continue-on-error: true` on both steps: a speed layer
