@@ -1,2 +1,2 @@
 # Public-Build-Farm
-私人订制
+私人订制%
