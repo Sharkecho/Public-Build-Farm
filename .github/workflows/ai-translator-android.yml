@@ -1,0 +1,53 @@
+name: AI Translator Android Build (public build farm)
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private ai-translator branch/tag/SHA"
+        required: true
+        default: "main"
+        type: string
+      publish_apk:
+        description: "Upload APK as a PUBLIC Actions artifact"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  flutter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout private AI Translator source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/ai-translator
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --debug
+
+      - name: Record source identity
+        run: |
+          echo "SOURCE_REPO=Sharkecho/ai-translator"
+          echo "SOURCE_REF=${{ inputs.source_ref }}"
+          git rev-parse HEAD
+
+      - name: Upload debug APK (explicit public opt-in only)
+        if: success() && inputs.publish_apk == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-translator-debug-apk-${{ github.run_id }}
+          path: mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 3
