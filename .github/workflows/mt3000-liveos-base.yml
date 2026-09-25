@@ -302,6 +302,13 @@ jobs:
             host-tools.tar.zst
             host-tools-manifest.json
           if-no-files-found: error
+      - name: Verify the candidate bundle (self-consistency gate)
+        run: |
+          # The manifests travel with the image. Verify the relationships BETWEEN them before
+          # anyone flashes anything: checksums vs files, source refs vs the lock, SBOM package
+          # list vs the image manifest, the injected Base overlay, capability coverage vs the
+          # current requirements. See firmware/tools/verify_candidate.py.
+          python3 firmware/tools/verify_candidate.py --dist dist --require-candidate
 
   # ---------------------------------------------------------------------------
   # Layer B: rust/LLVM (3h07m50s measured). Restores layer A, so this job only ever
@@ -787,13 +794,6 @@ jobs:
              rust-probe.log host-tools-probe.log base-layer-manifest.json "$DIST/"
           ( cd "$DIST" && sha256sum *.bin *.manifest *.json config.final > sha256sums-dist )
           python3 firmware/tools/offline_gate.py artifact --dir "$DIST" $KARGS $RARGS
-      - name: Verify the candidate bundle (self-consistency gate)
-        run: |
-          # The manifests travel with the image. Verify the relationships BETWEEN them before
-          # anyone flashes anything: checksums vs files, source pins vs the lock, SBOM package
-          # list vs the image manifest, capability coverage vs the current requirements.
-          # See firmware/tools/verify_candidate.py.
-          python3 firmware/tools/verify_candidate.py --dist dist --require-candidate
       - name: Artifact name
         id: name
         run: |
