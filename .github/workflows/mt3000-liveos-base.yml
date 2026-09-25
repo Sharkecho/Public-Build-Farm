@@ -152,7 +152,6 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
-            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -347,7 +346,6 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
-            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -582,7 +580,6 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
-            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
