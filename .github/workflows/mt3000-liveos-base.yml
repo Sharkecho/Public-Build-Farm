@@ -691,6 +691,44 @@ jobs:
           path: incoming-rust
           run-id: ${{ needs.rust-layer.outputs.source_run }}
           github-token: ${{ github.token }}
+      # The package cache (OpenWrt's CONFIG_CCACHE, $SRC/.ccache). Unlike the two toolchain
+      # layers this one is FAIL-OPEN on purpose: it is a speed layer, ccache validates every
+      # hit itself, so a miss/stale/corrupt cache costs time and never correctness. It is also
+      # the only layer that may be published publicly - the private tree compiles nothing
+      # (asserted by tests/firmware/test_ccache_layer.py), so it holds objects built from
+      # public OMR sources; build_dir/bin are excluded because they embed our overlay.
+      - name: Fetch the package cache (ccache) from a prior run
+        id: reuse-ccache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.keys.outputs.ccache_layer_artifact }}
+        shell: bash
+        run: |
+          set -u
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          RUN_ID="$(gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.id != ${{ github.run_id }})] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')" || true
+          [ -n "$RUN_ID" ] || { echo "CCACHE_CROSS_RUN=MISS"; exit 0; }
+          rm -rf incoming-ccache
+          if ! gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT_NAME" -D incoming-ccache; then
+            echo "CCACHE_CROSS_RUN=MISS reason=download-failed run=$RUN_ID"; rm -rf incoming-ccache; exit 0
+          fi
+          MAN=incoming-ccache/ccache-layer-manifest.json
+          TAR=incoming-ccache/ccache-layer.tar.zst
+          if [ ! -f "$MAN" ] || [ ! -f "$TAR" ]; then
+            echo "CCACHE_CROSS_RUN=MISS reason=incomplete-artifact run=$RUN_ID"; rm -rf incoming-ccache; exit 0
+          fi
+          if ! python3 firmware/tools/layer_key.py verify --layer ccache --runner "$RUNNER_LABEL" --manifest "$MAN" > reuse-ccache-verify.txt 2>&1 || ! grep -q 'CCACHE_LAYER=REUSE' reuse-ccache-verify.txt; then
+            echo "CCACHE_CROSS_RUN=MISS reason=identity-mismatch run=$RUN_ID"; cat reuse-ccache-verify.txt || true; rm -rf incoming-ccache; exit 0
+          fi
+          WANT="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tarball']['sha256'])" "$MAN")"
+          GOT="$(sha256sum "$TAR" | cut -d' ' -f1)"
+          if [ "$WANT" != "$GOT" ]; then
+            echo "CCACHE_CROSS_RUN=MISS reason=sha256-mismatch run=$RUN_ID"; rm -rf incoming-ccache; exit 0
+          fi
+          cp "$TAR" ccache-layer.tar.zst
+          cp "$MAN" ccache-layer-manifest.json
+          echo "hit=true" >> "$GITHUB_OUTPUT"
+          echo "CCACHE_CROSS_RUN=HIT run=$RUN_ID artifact=$ARTIFACT_NAME bytes=$(stat -c%s "$TAR")"
       - name: Cache downloads (speed only - correctness never depends on this)
         uses: actions/cache@v4
         with:
@@ -699,6 +737,26 @@ jobs:
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
+      - name: Restore the package cache (ccache)
+        run: |
+          set -ux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          if [ "${{ steps.reuse-ccache.outputs.hit }}" = "true" ]; then
+            tar --zstd -xf ccache-layer.tar.zst -C "$SRC"
+            python3 firmware/tools/layer_contents.py verify --src "$SRC" --layer ccache \
+              --manifest ccache-layer-manifest.json || echo "CCACHE_LAYER=PARTIAL_RESTORE (speed only)"
+          else
+            echo "CCACHE_LAYER=COLD (nothing to restore)"
+          fi
+          # Bound the cache: it travels as an artifact, and an unbounded one would grow past
+          # the per-artifact limit and slow every run down while saving less and less.
+          mkdir -p "$SRC/.ccache"
+          ccache --max-size=5G --max-files=0 >/dev/null 2>&1 || true
+          # record where ccache really keeps its cache: the pack step below assumes $SRC/.ccache
+          # (OpenWrt's ccache.mk sets CCACHE_DIR=$(TOPDIR)/.ccache), and this line is the
+          # evidence if a future OpenWrt changes it.
+          ccache -p 2>/dev/null | grep -E 'cache_dir|max_size' || echo "ccache config unavailable"
+          echo "== ccache before =="; ccache -s 2>/dev/null | head -20 || true
       - name: Build prep (OMR build.sh, ONLY_PREPARE)
         env:
           OMR_FEED: feeds/openmptcprouter
@@ -871,6 +929,28 @@ jobs:
           sudo ln -sf "$LLVM_BIN/clang" /usr/bin/clang
           command -v clang; clang --version | head -1
           /usr/bin/opt --version | head -1
+      # Order the build by RISK, not by make's own order. O44 died 2h40m into the image build on
+      # package/feeds/openmptcprouter/mptcp-bpf-bkup because the runner's host LLVM was
+      # incomplete. Compiling that package first turns a late 2h40m surprise into a ~5 minute
+      # one - and it is not extra work: this is the first package the full build would have
+      # compiled anyway, and whatever it produces lands in build_dir and the ccache for the
+      # next run.
+      - name: Probe the riskiest package before the full build (BPF schedulers)
+        run: |
+          set -ux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          START=$(date +%s)
+          ( cd "$SRC" && timeout 2400 make package/feeds/openmptcprouter/mptcp-bpf-bkup/compile ) \
+            > bpf-probe.log 2>&1
+          RC=$?
+          echo "bpf_probe_rc=$RC elapsed=$(( $(date +%s) - START ))s"
+          if [ "$RC" -ne 0 ]; then
+            echo "=== mptcp-bpf-bkup failed (this is the package that cost run 36117008724 2h40m) ==="
+            tail -n 120 bpf-probe.log
+            echo "BPF_SCHEDULERS=FAIL rc=$RC"
+            exit 1
+          fi
+          echo "== ccache after the probe =="; ccache -s 2>/dev/null | head -20 || true
       - name: Build image
         run: |
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -883,6 +963,34 @@ jobs:
                  exit 1; }
           tail -n 30 "$SRC/build.log"
           echo "== disk after build =="; df -h /
+      # Pack the package cache even when the build FAILED (if: always()): the objects that did
+      # compile are the most valuable thing a failed run can leave behind, and today a failure
+      # at 2h40m throws all of them away. `continue-on-error: true` on both steps: a speed layer
+      # must never turn a good build red at the finish line.
+      - name: Pack the package cache (ccache)
+        id: pack-ccache
+        if: always()
+        continue-on-error: true
+        run: |
+          set -ux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== ccache after the build =="; ccache -s 2>/dev/null | head -20 || true
+          python3 firmware/tools/layer_contents.py pack --src "$SRC" --layer ccache \
+            --out ccache-layer.tar.zst --manifest ccache-layer-manifest.json \
+            --identity layer-keys.json
+          echo "packed_bytes=$(stat -c%s ccache-layer.tar.zst 2>/dev/null || echo 0)"
+      - name: Upload the package cache (ccache)
+        if: always() && steps.pack-ccache.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.keys.outputs.ccache_layer_artifact }}
+          path: |
+            ccache-layer.tar.zst
+            ccache-layer-manifest.json
+          retention-days: 30
+          if-no-files-found: ignore
+          compression-level: 0
       - name: Collect artifacts + manifests + SBOM
         run: |
           set -eux
