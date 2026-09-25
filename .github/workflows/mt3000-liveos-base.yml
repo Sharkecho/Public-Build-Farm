@@ -152,7 +152,6 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
-            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -347,7 +346,6 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
-            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -438,12 +436,25 @@ jobs:
           # Informational for THIS layer on purpose: a missed host-tool stamp costs
           # minutes to rebuild, so failing closed here would burn a whole run for nothing.
           # (The rust layer below is the one that must fail closed - it costs 3h.)
-          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) > host-tools-probe.log 2>&1
+          #
+          # The `|| RC=$?` guard is load-bearing, exactly as in the rust probe below. `make -n`
+          # itself fails (exit 2) as soon as a restored stamp schedules work for a target whose
+          # log dir is gone - that is *information about the layer*, not a broken restore, and
+          # this step runs under `set -e`. Unguarded, a failed dry run killed the step before
+          # either HOST_TOOLS_LAYER verdict could be printed, so the run reported a bare
+          # "exit code 2" with no reason (host tools had cost 80 minutes by then).
+          RC=0
+          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) \
+            > host-tools-probe.log 2>&1 || RC=$?
+          echo "host-tools probe rc=$RC"
+          if [ "$RC" -ne 0 ]; then
+            tail -n 40 host-tools-probe.log
+          fi
           if grep -qE 'staging_dir/host/bin/[a-z]|/bin/gcc |bootstrap|configure --' host-tools-probe.log; then
-            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work"
+            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work probe_rc=$RC"
             tail -n 20 host-tools-probe.log
           else
-            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED"
+            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED probe_rc=$RC"
           fi
           df -h /
       - name: Build the rust host toolchain (the expensive step)
@@ -582,7 +593,6 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
-            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -717,12 +727,21 @@ jobs:
           echo "RUST_LAYER=REUSE_VERIFIED elapsed=${ELAPSED}s (dry run scheduled no rust work)"
           # Informational for the host tools: a missed stamp there costs minutes, so it
           # must not block the run. Fail-closed is reserved for the 3h08m rust layer.
-          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) > host-tools-probe.log 2>&1
+          # Guarded exactly like the rust probe above: `make -n` returns non-zero when the
+          # restored stamps schedule work, and an unguarded failure here produced a bare
+          # "exit code 2" with neither verdict.
+          HRC=0
+          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) \
+            > host-tools-probe.log 2>&1 || HRC=$?
+          echo "host-tools probe rc=$HRC"
+          if [ "$HRC" -ne 0 ]; then
+            tail -n 40 host-tools-probe.log
+          fi
           if grep -qE 'staging_dir/host/bin/[a-z]|/bin/gcc |bootstrap|configure --' host-tools-probe.log; then
-            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work"
+            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work probe_rc=$HRC"
             tail -n 20 host-tools-probe.log
           else
-            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED"
+            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED probe_rc=$HRC"
           fi
       - name: Build image
         run: |
