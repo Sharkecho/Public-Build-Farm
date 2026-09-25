@@ -204,6 +204,19 @@ jobs:
           import shutil
           shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
           PYEOF
+          # Record what the overlay contained. Nothing else in the bundle covers firmware/files,
+          # so without this a candidate cannot prove which Base revision went into the image -
+          # an OMR image carrying no Base runtime at all would pass every other check.
+          python3 - > base-layer-manifest.json <<'PYEOF'
+          import hashlib, json, pathlib
+          root = pathlib.Path("firmware/files")
+          files = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                   for p in sorted(root.rglob("*")) if p.is_file()}
+          stamp = json.loads((root / "etc/liveos/base-version.json").read_text())
+          print(json.dumps({"schema": "liveos-base-layer/1",
+                            "build_id": stamp.get("build_id"), "files": files},
+                           indent=2, sort_keys=True))
+          PYEOF
       - name: defconfig + config gate
         run: |
           set -eux
@@ -771,7 +784,7 @@ jobs:
             --build-id "gh-${{ github.run_id }}-${{ github.run_number }}" \
             --git-sha "$(git rev-parse HEAD)"
           cp layer-keys.json layer-verify.txt layer-verify-host-tools.txt \
-             rust-probe.log host-tools-probe.log "$DIST/"
+             rust-probe.log host-tools-probe.log base-layer-manifest.json "$DIST/"
           ( cd "$DIST" && sha256sum *.bin *.manifest *.json config.final > sha256sums-dist )
           python3 firmware/tools/offline_gate.py artifact --dir "$DIST" $KARGS $RARGS
       - name: Verify the candidate bundle (self-consistency gate)
