@@ -1,0 +1,103 @@
+name: CentoreOS Desktop Build (public build farm)
+# Desktop shell: TypeScript type-check + Vite production build + the Tauri native
+# build. The native build needs an MSVC toolchain, which windows-latest provides, so
+# this is where the shell is actually compiled — a developer workstation without the
+# C++ workload can still get a verified binary out of CI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private CentoreOS branch/tag/SHA"
+        required: true
+        default: "main"
+        type: string
+      publish_binary:
+        description: "Upload EXE as a PUBLIC Actions artifact"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: centoreos-desktop-${{ inputs.source_ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: desktop · windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout private CentoreOS source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/CentoreOS
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Node 24.21.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.21.0"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # rust-toolchain.toml pins 1.98.1; installing via rustup lets that file win, and
+      # the explicit toolchain argument keeps the intent visible in the workflow.
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: rust-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/rust-toolchain.toml') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
+
+      - name: Show resolved toolchain versions
+        run: |
+          node --version
+          npm --version
+          rustc --version
+          cargo --version
+        working-directory: apps/desktop
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/desktop
+
+      - name: Type-check and build the frontend
+        run: npm run build
+        working-directory: apps/desktop
+
+      - name: Build the Tauri shell
+        # --no-bundle keeps this job to "does it compile"; producing installers is a
+        # release-time concern, not a pull-request concern.
+        run: npm run tauri build -- --no-bundle
+        working-directory: apps/desktop
+
+      - name: Report the produced binary
+        if: success()
+        shell: bash
+        run: |
+          find apps/desktop/src-tauri/target/release -maxdepth 1 -type f -name "*.exe" -printf "%f  %s bytes\n" || true
+
+      - name: Upload desktop binary (explicit public opt-in only)
+        if: success() && inputs.publish_binary == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: centoreos-desktop-windows
+          path: apps/desktop/src-tauri/target/release/*.exe
+          if-no-files-found: warn
+          retention-days: 14
