@@ -1,0 +1,839 @@
+name: Note9 Kernel Build (public build farm)
+# G1-A：Samsung OSRC 内核源码 → aarch64 Image（baseline / uac2 两阶段）。
+#
+# 铁律：
+#   DEVICE_WRITES = 0 —— 本 workflow 不运行任何 adb 命令、不接触手机分区、不刷机。
+#   只产出 artifact（Image / .config / config.diff / manifest）供人工评审。
+#
+# 设计要点：
+#   * 源码包 sha256 必填，为空或校验失败 → 立刻 fail；
+#   * 源码压缩包与解压目录都以 source_sha256 为 cache key（下载一次，两阶段共享）；
+#   * 构建配方“先读源码再决定”（kernel/scripts/discover_build_recipe.py），不猜值；
+#   * uac2 阶段必须引用一个 conclusion=success 的 baseline run，且 Image sha256 逐字节一致；
+#   * 任一阶段失败都不阻断日志/产物的落盘与上传，由门禁给出权威 PASS/FAIL。
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private note9-liveos branch/tag/SHA"
+        required: true
+        default: "main"
+        type: string
+      source_url:
+        description: "源码包直链（url 模式必填；asset 模式下留空）"
+        required: false
+        default: ""
+        type: string
+      source_asset_tag:
+        description: "release-asset 模式：Release tag（如 g1a-source-N960NKSU3FVG4）"
+        required: false
+        default: ""
+        type: string
+      source_asset_name:
+        description: "release-asset 模式：asset 文件名（如 SM-N960N_N960NKSU3FVG4_Kernel.tar.gz）"
+        required: false
+        default: ""
+        type: string
+      source_sha256:
+        description: "源码包 sha256（必填；为空或校验失败即 fail）"
+        required: true
+        type: string
+      expected_model:
+        description: "期望机型"
+        required: true
+        default: "SM-N960N"
+        type: string
+      expected_pda:
+        description: "期望 PDA"
+        required: true
+        default: "N960NKSU3FVG4"
+        type: string
+      expected_changelist:
+        description: "期望 changelist（同时用于 LOCALVERSION）"
+        required: true
+        default: "24343300"
+        type: string
+      changelist_evidence:
+        description: "携带 changelist 的制品名（Samsung 源码不含 changelist，用它取证）"
+        required: false
+        default: "AP_N960NKSU3FVG4_CL24343300_QB54528121_REV00_user_low_ship_meta_OS10.tar.md5.zip"
+        type: string
+      phase:
+        description: "阶段：baseline 先跑；uac2 必须在 baseline PASS 之后"
+        required: true
+        default: "baseline"
+        type: choice
+        options:
+          - baseline
+          - uac2
+      baseline_run_id:
+        description: "uac2 阶段必填：已 PASS 的 baseline run id"
+        required: false
+        type: string
+      baseline_image_sha256:
+        description: "uac2 阶段必填：baseline Image 的 sha256（必须与本 run 取回的基线一致）"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: "note9-kernel-${{ inputs.source_ref }}-${{ inputs.phase }}"
+  cancel-in-progress: false
+
+env:
+  SOURCE_ARCHIVE: downloads/source.zip
+  SRC: kernel-src
+  OUT: artifacts/g1-build
+  RESULTS: results
+
+jobs:
+  build:
+    name: "${{ inputs.phase }} · ${{ inputs.expected_pda }}"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout（仓库脚本与门禁工具）
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/note9-liveos
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 记录私有源码身份
+        run: |
+          set -euo pipefail
+          echo "SOURCE_REPO=Sharkecho/note9-liveos"
+          echo "SOURCE_REF=${{ inputs.source_ref }}"
+          echo "SOURCE_SHA=$(git rev-parse HEAD)"
+
+      - name: 安装最小必要依赖
+        run: bash kernel/scripts/install_deps.sh
+
+      # ------------------------------------------------------------------ #
+      # 工具链缓存（I 节）：apt 用与不使用输出无关的缓存，只为省时间。
+      # 只缓存 apt 的 .deb 归档，**不缓存任何构建产物** —— 两个阶段都必须是
+      # clean build（uac2 阶段还额外先 make mrproper），旧 object 不得复用。
+      # ------------------------------------------------------------------ #
+      - name: 缓存 apt 归档（工具链/依赖）
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: "note9-apt-${{ runner.os }}-${{ hashFiles('kernel/scripts/install_deps.sh') }}"
+          restore-keys: |
+            note9-apt-${{ runner.os }}-
+
+      - name: 准备目录
+        run: |
+          set -euo pipefail
+          mkdir -p downloads "$SRC" "$OUT" "$RESULTS"
+
+      # 注意：`set -o pipefail` 配上 `| head` 会把 SIGPIPE(141) 当成失败，
+      # 所以这里必须临时关掉 pipefail —— 否则整条流水线在这一步就断。
+      - name: 记录宿主交叉工具链（可选，缺失不致命）
+        run: |
+          set +o pipefail
+          set -u
+          {
+            echo "note: 实际使用的 CROSS_COMPILE 由 recipe 决定；"
+            echo "      本项目优先使用源码包自带的官方工具链（Linux 4.9 用现代 GCC 编不过）。"
+            echo "--- host aarch64-linux-gnu-gcc ---"
+            aarch64-linux-gnu-gcc --version 2>&1 | head -n 1 || echo "(host 交叉编译器不存在)"
+            echo "--- make ---"
+            make --version 2>&1 | head -n 1 || true
+          } | tee "$OUT/toolchain_host.txt"
+          true
+
+      # ------------------------------------------------------------------ #
+      # ------------------------------------------------------------------ #
+      # 确定源码包名称与类型 —— **必须在缓存判定之前，且不依赖缓存命中**。
+      #
+      # 真实故障（run 35830903110）：`SOURCE_KIND` 原先只在「获取源码包」里设置，
+      # 而那一步的 if 是"缓存未命中"。缓存命中时它整段被 skip，于是
+      # SOURCE_KIND 为空 → 「记录源码包清单」对 tar.gz 跑 unzip -l：
+      #   End-of-central-directory signature not found ... exit code 9
+      # 即**缓存命中路径是坏的**，且报错完全指不到真因。
+      # ------------------------------------------------------------------ #
+      - name: 确定源码包名称与类型（不依赖缓存命中）
+        run: |
+          set -euo pipefail
+          ASSET_NAME="${{ inputs.source_asset_name }}"
+          SOURCE_URL="${{ inputs.source_url }}"
+          if [ -n "$ASSET_NAME" ]; then
+            NAME="$ASSET_NAME"
+          elif [ -n "$SOURCE_URL" ]; then
+            NAME=$(python3 -c "import sys,urllib.parse as u; p=u.urlparse(sys.argv[1]).path; print(u.unquote(p.rsplit('/',1)[-1]) or 'source.zip')" "$SOURCE_URL")
+          else
+            echo "SOURCE_INPUT=FAIL reason=既没有 source_asset_name 也没有 source_url"
+            exit 1
+          fi
+          case "$NAME" in
+            *.tar.gz|*.tgz) KIND=targz ;;
+            *.zip)          KIND=zip   ;;
+            *)              KIND=unknown ;;
+          esac
+          echo "SOURCE_NAME=$NAME"  >> "$GITHUB_ENV"
+          echo "SOURCE_KIND=$KIND"  >> "$GITHUB_ENV"
+          echo "SOURCE_NAME=$NAME (kind=$KIND)"
+
+      # 校验/解压阶段一律以**文件魔数**为准（detect_source_kind.py），
+      # 这样即便上面的 KIND 推导有偏差也不会用错工具。
+      # 源码获取：压缩包缓存 + sha256 门禁 + 解压目录缓存
+      # ------------------------------------------------------------------ #
+      - name: 恢复源码压缩包缓存
+        id: cache-archive
+        uses: actions/cache@v4
+        with:
+          path: downloads
+          key: "note9-ksrc-archive-${{ inputs.source_sha256 }}"
+
+      - name: 获取源码包（release-asset 优先；否则直链）
+        if: steps.cache-archive.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          ASSET_NAME="${{ inputs.source_asset_name }}"
+          ASSET_TAG="${{ inputs.source_asset_tag }}"
+          SOURCE_URL="${{ inputs.source_url }}"
+
+          if [ -n "$ASSET_NAME" ]; then
+            # 私有仓库 release asset：使用 Build Farm 的只读 source token，显式指定源仓库
+            [ -n "$ASSET_TAG" ] || { echo "SOURCE_INPUT=FAIL reason=缺 source_asset_tag"; exit 1; }
+            gh release download "$ASSET_TAG" --repo Sharkecho/note9-liveos -p "$ASSET_NAME" -D downloads --clobber
+            mv "downloads/$ASSET_NAME" "$SOURCE_ARCHIVE"
+            echo "SOURCE_MODE=release-asset" | tee "$OUT/source_mode.txt"
+            echo "SOURCE_NAME=$ASSET_NAME" >> "$GITHUB_ENV"
+            case "$ASSET_NAME" in
+              *.tar.gz|*.tgz) echo "SOURCE_KIND=targz" >> "$GITHUB_ENV" ;;
+              *)              echo "SOURCE_KIND=zip"   >> "$GITHUB_ENV" ;;
+            esac
+          elif [ -n "$SOURCE_URL" ]; then
+            curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
+              -o "$SOURCE_ARCHIVE" "$SOURCE_URL"
+            echo "SOURCE_MODE=url" | tee "$OUT/source_mode.txt"
+            case "$SOURCE_URL" in
+              *.tar.gz|*.tgz) echo "SOURCE_KIND=targz" >> "$GITHUB_ENV" ;;
+              *)              echo "SOURCE_KIND=zip"   >> "$GITHUB_ENV" ;;
+            esac
+          else
+            echo "SOURCE_INPUT=FAIL reason=既没有 source_asset_name 也没有 source_url"
+            exit 1
+          fi
+          ls -l "$SOURCE_ARCHIVE"
+
+      - name: 校验源码包 sha256（为空或失败即 fail）
+        run: |
+          set -euo pipefail
+          if [ -z "${{ inputs.source_sha256 }}" ]; then
+            echo "SOURCE_SHA256_EMPTY=FAIL"
+            exit 1
+          fi
+          if [ ! -f "$SOURCE_ARCHIVE" ]; then
+            echo "SOURCE_ARCHIVE_MISSING=$SOURCE_ARCHIVE"
+            exit 1
+          fi
+          echo "${{ inputs.source_sha256 }}  $SOURCE_ARCHIVE" | sha256sum -c -
+          echo "SOURCE_SHA256=OK"
+          sha256sum "$SOURCE_ARCHIVE" | awk '{print $1}' > "$OUT/source.zip.sha256"
+
+      - name: 记录 SOURCE_NAME / SOURCE_KIND 到产物（两种模式都留痕）
+        run: |
+          set -euo pipefail
+          echo "SOURCE_NAME=${SOURCE_NAME:-unknown}" | tee "$OUT/source_name.txt"
+          echo "SOURCE_KIND=${SOURCE_KIND:-unknown}" | tee "$OUT/source_kind.txt"
+
+      - name: 记录源码包清单
+        run: |
+          set +o pipefail
+          set -e
+          KIND=$(python3 kernel/scripts/detect_source_kind.py "$SOURCE_ARCHIVE")
+          echo "SOURCE_KIND_DETECTED=$KIND"
+          if [ "$KIND" = "targz" ]; then
+            tar -tzf "$SOURCE_ARCHIVE" > "$OUT/source.entries.full.txt"
+          else
+            unzip -l "$SOURCE_ARCHIVE" > "$OUT/source.entries.full.txt"
+          fi
+          head -n 60 "$OUT/source.entries.full.txt" | tee "$OUT/source.entries.txt"
+          echo "SOURCE_ENTRIES=$(wc -l < "$OUT/source.entries.full.txt")" | tee "$OUT/source.entries.count"
+          rm -f "$OUT/source.entries.full.txt"
+
+      # ------------------------------------------------------------------ #
+      # 源码树**每次全新解压，绝不缓存**。
+      #
+      # 真实事故（run 35831850746）：原先有 `note9-ksrc-tree-<sha>` 缓存，而
+      # actions/cache 的 post 步骤是在 **job 结束时按路径整体保存** —— 于是上一次
+      # 构建留在源码树里的 `.config` 与 `arch/arm64/boot/Image` 被一起当成"源码树"
+      # 存进了缓存。铁证：该 run 的构建步骤**根本没有执行**（前一步就失败了），
+      # 但采集到的 `uac2.Image` 是 31846408 B、sha256=4b5834be…，
+      # 与 baseline Image 的 sha256 **完全相同**。
+      # 后果：① 本 workflow 注释里"两个阶段都必须是 clean build"的保证失效；
+      #       ② 失败路径下仍能"采集"到上一次的镜像，看起来像本次产物 —— 典型的
+      #          假证据来源。
+      # 源码压缩包缓存（`note9-ksrc-archive-<sha>`）保留：重新解压只是耗时，
+      # 不会重新下载，且保证源码树从零开始。
+      # ------------------------------------------------------------------ #
+      - name: 解压源码（每次全新解压，不缓存源码树）
+        run: |
+          set +o pipefail
+          set -e
+          rm -rf "$SRC"
+          mkdir -p "$SRC"
+          KIND=$(python3 kernel/scripts/detect_source_kind.py "$SOURCE_ARCHIVE")
+          echo "SOURCE_KIND_DETECTED=$KIND"
+          if [ "$KIND" = "targz" ]; then
+            tar -xzf "$SOURCE_ARCHIVE" -C "$SRC"
+          else
+            unzip -q "$SOURCE_ARCHIVE" -d "$SRC"
+            # Samsung OSRC 的 KOR_QQ 包是**嵌套**的：zip 里是 Kernel.tar.gz + READMEs，
+            # 真正的源码树在 Kernel.tar.gz 里。不解这一层就会"找不到源码根"。
+            INNER=$(find "$SRC" -maxdepth 2 -iname 'kernel.tar.gz' | head -n 1 || true)
+            if [ -n "$INNER" ]; then
+              echo "INNER_KERNEL_ARCHIVE=$INNER" | tee "$OUT/inner_kernel_archive.txt"
+              tar -xzf "$INNER" -C "$SRC"
+            fi
+          fi
+          find "$SRC" -maxdepth 3 -type d | head -n 60 | tee "$OUT/source.tree.txt"
+
+      # ------------------------------------------------------------------ #
+      # 洁净度硬断言：源码树里不得出现任何构建产物。
+      #
+      # 这是上面"不缓存源码树"的**可证伪护栏** —— 如果将来有人又把源码树缓存
+      # 加回来（或换个名字缓存），这里会立刻 FAIL，而不是让一次假构建悄悄通过。
+      # 注意 `toolchain/` 子树里**本来就**带自带的静态库（libgcc.a 等），
+      # 所以按 `-prune` 排除，只查真正的构建产物。
+      # ------------------------------------------------------------------ #
+      - name: 源码树洁净度门禁（含构建产物即 fail）
+        run: |
+          set -euo pipefail
+          if [ -e "$SRC/.config" ]; then
+            echo "SOURCE_PRISTINE=FAIL reason=源码树已含 .config: $SRC/.config"
+            exit 1
+          fi
+          BAD=$(find "$SRC" -path "$SRC/toolchain" -prune -o \
+                  \( -name '*.o' -o -name '*.cmd' -o -name 'Image' -o -name '*.ko' \) \
+                  -print -quit)
+          if [ -n "${BAD:-}" ]; then
+            echo "SOURCE_PRISTINE=FAIL reason=源码树已含构建产物: $BAD"
+            exit 1
+          fi
+          echo "SOURCE_PRISTINE=PASS" | tee "$OUT/source_pristine.txt"
+
+      - name: 定位源码根（含 Makefile 与 arch/arm64/configs）
+        id: locate
+        run: |
+          set -euo pipefail
+          ROOT=$(python3 - <<'PY'
+          import os, sys
+          base = os.environ.get("SRC", "kernel-src")
+          cands = []
+          for dirpath, dirnames, filenames in os.walk(base):
+              if "Makefile" in filenames and os.path.isdir(os.path.join(dirpath, "arch", "arm64", "configs")):
+                  cands.append(dirpath)
+          if not cands:
+              sys.exit("NO_SOURCE_ROOT_FOUND")
+          cands.sort(key=len)
+          print(cands[0])
+          PY
+          )
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_ROOT=$ROOT" | tee "$OUT/source_root.txt"
+
+      # ------------------------------------------------------------------ #
+      # 源码门禁（版本 / changelist / 机型）
+      # ------------------------------------------------------------------ #
+      - name: 源码版本门禁（SOURCE_MATCH）
+        run: |
+          set -euo pipefail
+          python3 tools/g1a/verify_source.py \
+            --source "${{ steps.locate.outputs.root }}" \
+            --source-name "$SOURCE_NAME" \
+            --expected-kernel-version 4.9.118 \
+            --expected-changelist "${{ inputs.expected_changelist }}" \
+            --expected-model "${{ inputs.expected_model }}" \
+            --changelist-evidence "${{ inputs.changelist_evidence }}" \
+            --check source --json | tee "$RESULTS/SOURCE_MATCH.json"
+
+      - name: 机型门禁（MODEL_MATCH）
+        run: |
+          set -euo pipefail
+          python3 tools/g1a/verify_source.py \
+            --source "${{ steps.locate.outputs.root }}" \
+            --source-name "$SOURCE_NAME" \
+            --expected-model "${{ inputs.expected_model }}" \
+            --check model --json | tee "$RESULTS/MODEL_MATCH.json"
+
+      # ------------------------------------------------------------------ #
+      # 配方发现：读 README / build_kernel.sh，再决定值
+      # ------------------------------------------------------------------ #
+      - name: 读取源码 README 与 build_kernel.sh，确定构建配方
+        run: |
+          set -euo pipefail
+          python3 kernel/scripts/discover_build_recipe.py \
+            --source-dir "${{ steps.locate.outputs.root }}" \
+            --changelist "${{ inputs.expected_changelist }}" \
+            --prefer-bundled-toolchain \
+            --out "$OUT/recipe.json" --env-out "$OUT/recipe.env" --require \
+            | tee "$OUT/discover.log"
+
+      - name: 导出配方到环境
+        run: cat "$OUT/recipe.env" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------ #
+      # Python 2 可用性硬校验：Samsung 的 rkp_cfp 是 **Python 2 源码**。
+      #
+      # Stock defconfig 里 `CONFIG_RKP_CFP_JOPP=y`（defconfig:557），
+      # link-vmlinux 之后会执行 `scripts/rkp_cfp/instrument.py`，
+      # 该文件 shebang 是 `#!/usr/bin/env python`、内容是 py2 语法（`print "..."`）。
+      # 把 python 指到 python3 会得到：
+      #   SyntaxError: Missing parentheses in call to 'print'
+      #   make: *** [Makefile:1101: vmlinux] Error 1
+      # —— vmlinux 其实已经链好了，只是后处理脚本跑不起来。
+      #
+      # 在**编译前**就验掉，不让它在 vmlinux 之后才暴露。
+      # ------------------------------------------------------------------ #
+      - name: Python 2 可用性硬校验（rkp_cfp 需要）
+        run: |
+          set -euo pipefail
+          ROOT="${{ steps.locate.outputs.root }}"
+          PY_VER="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          echo "python  = $PY_VER ($(command -v python))"
+          echo "python3 = $(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          if [ "$PY_VER" != "2.7" ]; then
+            echo "PYTHON2_PROBE=FAIL 期望 2.7（Samsung rkp_cfp 是 Python 2 源码），实得 $PY_VER"
+            exit 1
+          fi
+          INSTR="$ROOT/scripts/rkp_cfp/instrument.py"
+          if [ ! -f "$INSTR" ]; then
+            echo "PYTHON2_PROBE=FAIL 找不到 $INSTR"
+            exit 1
+          fi
+          python -m py_compile "$INSTR"
+          echo "RKP_CFP_INSTRUMENT_PYCOMPILE=PASS"
+          echo "PYTHON2_PROBE=PASS"
+
+      # ------------------------------------------------------------------ #
+      # Samsung 官方 README 明确要求 export ANDROID_MAJOR_VERSION（本机实测
+      # README_Kernel.txt: `export ANDROID_MAJOR_VERSION=q`）。缺了它内核会按
+      # 错误的 Android 版本分支编译，必须显式带上。
+      # ------------------------------------------------------------------ #
+      - name: 注入 Samsung 构建所需环境（ANDROID_MAJOR_VERSION）
+        run: echo "ANDROID_MAJOR_VERSION=q" >> "$GITHUB_ENV"
+
+      # 记录**实际使用**的那个工具链版本（recipe 解析之后才知道是哪个）。
+      - name: 记录实际使用的交叉工具链版本
+        run: |
+          set +o pipefail
+          set -u
+          {
+            echo "CROSS_COMPILE=$CROSS_COMPILE"
+            echo "CROSS_COMPILE_SOURCE=${CROSS_COMPILE_SOURCE:-<unset>}"
+            echo "ARCH=$ARCH"
+            echo "DEFCONFIG=$DEFCONFIG"
+            echo "LOCALVERSION=$LOCALVERSION"
+            echo "ANDROID_MAJOR_VERSION=${ANDROID_MAJOR_VERSION:-<unset>}"
+            echo "--- ${CROSS_COMPILE}gcc --version ---"
+            "${CROSS_COMPILE}gcc" --version 2>&1 | head -n 2 || echo "(未找到：${CROSS_COMPILE}gcc)"
+          } | tee "$OUT/toolchain.txt"
+          true
+
+      # ------------------------------------------------------------------ #
+      # 交叉工具链硬校验：不可用就**在这里**失败。
+      #
+      # 历史教训：曾因 CROSS_COMPILE 多了一个 '/' 导致编译器不存在，
+      # 但失败被推迟到 defconfig 阶段，报错信息只有 "No such file or directory"，
+      # 很难判断真因。现在把它变成一道独立门禁，失败签名是 TOOLCHAIN_OK=FAIL。
+      #
+      # 同时校验 /usr/bin/python：官方工具链的 aarch64-linux-android-gcc 是
+      # `#!/usr/bin/python` 脚本，ubuntu-22.04 默认没有这个路径。
+      # ------------------------------------------------------------------ #
+      - name: 交叉工具链硬校验（不可用即 fail）
+        run: |
+          set -euo pipefail
+          if [ -z "${CROSS_COMPILE}" ]; then
+            echo "TOOLCHAIN_SOURCE=none（由源码 Makefile 默认值决定）"
+            gcc --version | sed -n '1p'
+            echo "TOOLCHAIN_OK=PASS"
+            exit 0
+          fi
+          GCC="${CROSS_COMPILE}gcc"
+          if [ ! -e "$GCC" ]; then
+            echo "TOOLCHAIN_OK=FAIL reason=编译器不存在: $GCC"
+            echo "CROSS_COMPILE=${CROSS_COMPILE}"
+            exit 1
+          fi
+          if ! "$GCC" --version > /dev/null 2>&1; then
+            echo "TOOLCHAIN_OK=FAIL reason=编译器无法执行: $GCC"
+            echo "--- 前几行原始报错 ---"
+            "$GCC" --version 2>&1 | head -n 5 || true
+            echo "--- /usr/bin/python ---"
+            ls -l /usr/bin/python 2>&1 || echo "缺失（官方工具链 gcc 包装脚本 shebang 需要它）"
+            exit 1
+          fi
+          "$GCC" --version | sed -n '1p'
+          echo "TOOLCHAIN_OK=PASS"
+
+      # ------------------------------------------------------------------ #
+      # uac2 阶段硬前置：必须先有一个 PASS 的 baseline
+      # ------------------------------------------------------------------ #
+      - name: uac2 前置·校验 baseline 证据（缺失/非 PASS 即 fail）
+        if: inputs.phase == 'uac2'
+        # baseline_run_id refers to a previous Public-Build-Farm run.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ inputs.baseline_run_id }}"
+          EXPECT_SHA="${{ inputs.baseline_image_sha256 }}"
+          if [ -z "$RUN_ID" ]; then
+            echo "UAC2_PRECONDITION=FAIL reason=baseline_run_id 缺失"
+            exit 1
+          fi
+          if [ -z "$EXPECT_SHA" ]; then
+            echo "UAC2_PRECONDITION=FAIL reason=baseline_image_sha256 缺失"
+            exit 1
+          fi
+          CONCLUSION=$(gh run view "$RUN_ID" --json conclusion --jq '.conclusion')
+          echo "BASELINE_RUN_ID=$RUN_ID" > "$OUT/baseline_ref.txt"
+          echo "BASELINE_RUN_CONCLUSION=$CONCLUSION" >> "$OUT/baseline_ref.txt"
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "UAC2_PRECONDITION=FAIL reason=baseline run 未 PASS (conclusion=$CONCLUSION)"
+            exit 1
+          fi
+          mkdir -p baseline-artifacts
+          gh run download "$RUN_ID" -n baseline-artifacts -D baseline-artifacts
+          # artifact 的 zip **保留上传时的相对路径**（artifacts/g1-build/…、results/…），
+          # 所以不能写死扁平路径 —— 按文件名找，找不到就明确失败。
+          CFG=$(find baseline-artifacts -name baseline.config -type f | head -n 1 || true)
+          CFG_SHA=$(find baseline-artifacts -name baseline.config.sha256 -type f | head -n 1 || true)
+          IMG_SHA_FILE=$(find baseline-artifacts -name baseline.Image.sha256 -type f | head -n 1 || true)
+          if [ -z "$CFG" ] || [ -z "$IMG_SHA_FILE" ]; then
+            echo "UAC2_PRECONDITION=FAIL reason=baseline artifact 里找不到 baseline.config / baseline.Image.sha256"
+            find baseline-artifacts -maxdepth 4 | head -n 40
+            exit 1
+          fi
+          cp "$CFG" "$OUT/baseline.config"
+          [ -n "$CFG_SHA" ] && cp "$CFG_SHA" "$OUT/baseline.config.sha256"
+          GOT_SHA=$(head -n 1 "$IMG_SHA_FILE" | tr -d '[:space:]')
+          echo "BASELINE_IMAGE_SHA256=$GOT_SHA" >> "$OUT/baseline_ref.txt"
+          if [ "$GOT_SHA" != "$EXPECT_SHA" ]; then
+            echo "UAC2_PRECONDITION=FAIL reason=baseline Image sha256 不一致 (got=$GOT_SHA expected=$EXPECT_SHA)"
+            exit 1
+          fi
+          echo "UAC2_PRECONDITION=PASS"
+          cat "$OUT/baseline_ref.txt"
+
+      # ------------------------------------------------------------------ #
+      # uac2 阶段唯一主动改动：把 defconfig 里那一行**就地替换**。
+      #
+      # 真实故障（run 35831850746）：原实现是 `cd "$ROOT" && git apply ...`。
+      # `kernel-src` 位于 actions/checkout 出来的仓库**内部**，git 会把 patch 里的
+      # 相对路径解析到**外层仓库根**；在那里找不到目标文件时，git 对"预像为空"
+      # 的 hunk 直接 `Skipped patch '...'` 并 **退出码 0**。于是
+      # `uac2.patch_mode.txt` 写着 `git-apply`，defconfig 却一个字节都没变 ——
+      # 静默 no-op，是最难排查的一类假成功。
+      # 本地两种结构对照复现：仓库**外** rc=1 且明确报错；仓库**子目录内** rc=0
+      # 且什么都不做。
+      #
+      # 两条对策：
+      #   ① `GIT_CEILING_DIRECTORIES` 切断仓库发现，让 patch 路径按 cwd（源码根）
+      #      解析 —— 也就是把源码根当作 patch 的根；
+      #   ② 施加前后各取一次 sha256，**没变化就硬失败**：无论将来换什么实现，
+      #      静默 no-op 都过不了这一关。
+      # ------------------------------------------------------------------ #
+      - name: uac2 应用最小改动（patch 优先，脚本回退）
+        if: inputs.phase == 'uac2'
+        env:
+          PATCH: ${{ github.workspace }}/kernel/patches/uac2-enable.patch
+        run: |
+          set -euo pipefail
+          ROOT="${{ steps.locate.outputs.root }}"
+          DEFCONFIG_FILE="$ROOT/$DEFCONFIG_PATH"
+          if [ ! -f "$DEFCONFIG_FILE" ]; then
+            echo "UAC2_PRECONDITION=FAIL reason=defconfig 不存在: $DEFCONFIG_FILE"
+            exit 1
+          fi
+          export GIT_CEILING_DIRECTORIES="${{ github.workspace }}"
+          BEFORE=$(sha256sum "$DEFCONFIG_FILE" | awk '{print $1}')
+          if ( cd "$ROOT" && git apply -p1 --unidiff-zero --check "$PATCH" ) 2>"$OUT/patch.check.log"; then
+            ( cd "$ROOT" && git apply -p1 --unidiff-zero "$PATCH" )
+            echo "UAC2_PATCH_MODE=git-apply" | tee "$OUT/uac2.patch_mode.txt"
+          else
+            echo "UAC2_PATCH_MODE=fallback-script" | tee "$OUT/uac2.patch_mode.txt"
+            cat "$OUT/patch.check.log"
+            python3 kernel/scripts/enable_uac2_defconfig.py --defconfig "$DEFCONFIG_FILE"
+          fi
+          AFTER=$(sha256sum "$DEFCONFIG_FILE" | awk '{print $1}')
+          {
+            echo "DEFCONFIG_SHA_BEFORE=$BEFORE"
+            echo "DEFCONFIG_SHA_AFTER=$AFTER"
+          } | tee "$OUT/uac2.defconfig.change.txt"
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "UAC2_EDIT=FAIL reason=defconfig 字节未变化（patch 静默 no-op，或源码树已被污染）"
+            exit 1
+          fi
+          echo "UAC2_EDIT=PASS"
+          python3 kernel/scripts/enable_uac2_defconfig.py --defconfig "$DEFCONFIG_FILE" --verify-only
+          grep -n 'CONFIG_USB_CONFIGFS_F_UAC2' "$DEFCONFIG_FILE" | tee "$OUT/uac2.defconfig.line.txt"
+
+      # ------------------------------------------------------------------ #
+      # 构建（baseline：不动源码；uac2：mrproper 后 clean 重建）
+      # ------------------------------------------------------------------ #
+      - name: baseline 构建（不修改任何源码）
+        if: inputs.phase == 'baseline'
+        run: |
+          set +e
+          SOURCE_DIR="${{ steps.locate.outputs.root }}" \
+          LOG_FILE="$OUT/baseline.build.log" \
+          bash kernel/scripts/build_kernel.sh
+          RC=$?
+          echo "BUILD_EXIT=$RC" | tee "$OUT/baseline.build.exit"
+          tail -n 30 "$OUT/baseline.build.log" || true
+
+      - name: uac2 清理并重建
+        if: inputs.phase == 'uac2'
+        run: |
+          set +e
+          ROOT="${{ steps.locate.outputs.root }}"
+          if [ -n "${CROSS_COMPILE:-}" ]; then
+            ( cd "$ROOT" && make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" mrproper ) \
+              > "$OUT/uac2.mrproper.log" 2>&1
+          else
+            ( cd "$ROOT" && make ARCH="$ARCH" mrproper ) > "$OUT/uac2.mrproper.log" 2>&1
+          fi
+          SOURCE_DIR="$ROOT" LOG_FILE="$OUT/uac2.build.log" \
+            bash kernel/scripts/build_kernel.sh
+          RC=$?
+          echo "BUILD_EXIT=$RC" | tee "$OUT/uac2.build.exit"
+          tail -n 30 "$OUT/uac2.build.log" || true
+
+      # ------------------------------------------------------------------ #
+      # 产物采集（无论构建成败都落盘）
+      # ------------------------------------------------------------------ #
+      - name: 采集 baseline 产物
+        if: always() && inputs.phase == 'baseline'
+        run: |
+          set +e
+          ROOT="${{ steps.locate.outputs.root }}"
+          # sha256 只对**真实存在**的产物生成；缺失就写显式失败标记。
+          # 绝不创建 0 字节的 .sha256 —— 那看起来像证据，实际是空文件（曾经的坑）。
+          for pair in "config:$ROOT/.config:baseline.config" \
+                      "image:$ROOT/arch/arm64/boot/Image:baseline.Image"; do
+            LABEL="${pair%%:*}"; REST="${pair#*:}"; SRC="${REST%%:*}"; DST="${REST#*:}"
+            if [ -s "$SRC" ]; then
+              cp "$SRC" "$OUT/$DST"
+              sha256sum "$OUT/$DST" | awk '{print $1}' > "$OUT/$DST.sha256"
+              echo "COLLECT_${LABEL}=OK size=$(stat -c%s "$OUT/$DST") sha=$(cat "$OUT/$DST.sha256")"
+            else
+              echo "COLLECT_${LABEL}=MISSING src=$SRC" | tee "$OUT/$DST.sha256"
+            fi
+          done
+          rm -f "$OUT/baseline.Image"
+          ls -l "$OUT"
+          true
+
+      - name: 采集 uac2 产物
+        if: always() && inputs.phase == 'uac2'
+        run: |
+          set +e
+          ROOT="${{ steps.locate.outputs.root }}"
+          # 除 config/Image 外，还要取 ``System.map`` 与 ``Module.symvers``：
+          # G1-SIM 的 MODULE_ABI 门禁需要**内核侧符号 CRC 表**才能与设备上真实 .ko
+          # 的 ``__versions`` 做比对（否则那一项只能记 UNKNOWN —— 不许臆测）。
+          # 该表由 `make vmlinux`/`modpost` 产出，放在源码根，不在 $OUT。
+          for pair in "config:$ROOT/.config:uac2.config" \
+                      "image:$ROOT/arch/arm64/boot/Image:uac2.Image" \
+                      "systemmap:$ROOT/System.map:uac2.System.map" \
+                      "symvers:$ROOT/Module.symvers:uac2.Module.symvers" \
+                      "vmlinux_symvers:$ROOT/vmlinux.symvers:uac2.vmlinux.symvers"; do
+            LABEL="${pair%%:*}"; REST="${pair#*:}"; SRC="${REST%%:*}"; DST="${REST#*:}"
+            if [ -s "$SRC" ]; then
+              cp "$SRC" "$OUT/$DST"
+              sha256sum "$OUT/$DST" | awk '{print $1}' > "$OUT/$DST.sha256"
+              echo "COLLECT_${LABEL}=OK size=$(stat -c%s "$OUT/$DST") sha=$(cat "$OUT/$DST.sha256")"
+            else
+              echo "COLLECT_${LABEL}=MISSING src=$SRC" | tee "$OUT/$DST.sha256"
+            fi
+          done
+          ls -l "$OUT"
+          true
+
+      # ------------------------------------------------------------------ #
+      # 门禁
+      # ------------------------------------------------------------------ #
+      - name: baseline 构建门禁（BASELINE_BUILD）
+        if: inputs.phase == 'baseline'
+        run: |
+          set -euo pipefail
+          RC=$(sed -n 's/^BUILD_EXIT=//p' "$OUT/baseline.build.exit" | tail -n 1)
+          python3 tools/g1a/verify_baseline_build.py \
+            --image "${{ steps.locate.outputs.root }}/arch/arm64/boot/Image" \
+            --config "$OUT/baseline.config" \
+            --build-exit-code "${RC:-1}" --json | tee "$RESULTS/BASELINE_BUILD.json"
+
+      - name: uac2 配置门禁（UAC2_CONFIG）
+        if: inputs.phase == 'uac2'
+        run: |
+          set -euo pipefail
+          python3 tools/g1a/verify_uac_config.py \
+            --uac2 "$OUT/uac2.config" \
+            --baseline "$OUT/baseline.config" --json | tee "$RESULTS/UAC2_CONFIG.json"
+
+      - name: 生成 config.diff 并做最小差异审计（MINIMAL_DIFF）
+        if: inputs.phase == 'uac2'
+        run: |
+          set +e
+          diff -u "$OUT/baseline.config" "$OUT/uac2.config" > "$OUT/config.diff"
+          echo "CONFIG_DIFF_EXIT=$?"
+          set -e
+          set +o pipefail
+          head -n 80 "$OUT/config.diff" || true
+          grep -c '^[+-]CONFIG_\|^[+-]# CONFIG_' "$OUT/config.diff" || true
+          python3 tools/g1a/audit_config_diff.py \
+            --baseline "$OUT/baseline.config" \
+            --uac2 "$OUT/uac2.config" \
+            --diff "$OUT/config.diff" --json | tee "$RESULTS/MINIMAL_DIFF.json"
+
+      # ------------------------------------------------------------------ #
+      # manifest + 上传（always）
+      # ------------------------------------------------------------------ #
+      - name: baseline manifest
+        if: always() && inputs.phase == 'baseline'
+        run: |
+          set +e
+          python3 kernel/scripts/make_manifest.py \
+            --phase baseline --out "$OUT/baseline.manifest.json" --allow-missing \
+            --file image="${{ steps.locate.outputs.root }}/arch/arm64/boot/Image" \
+            --file config="$OUT/baseline.config" \
+            --kv source_url="${{ inputs.source_url }}" \
+            --kv source_sha256="${{ inputs.source_sha256 }}" \
+            --kv expected_model="${{ inputs.expected_model }}" \
+            --kv expected_pda="${{ inputs.expected_pda }}" \
+            --kv expected_changelist="${{ inputs.expected_changelist }}" \
+            --kv kernel_version="$KERNEL_VERSION" \
+            --kv defconfig="$DEFCONFIG" \
+            --kv localversion="$LOCALVERSION" \
+            --kv run_id="${{ github.run_id }}"
+          true
+
+      - name: uac2 manifest
+        if: always() && inputs.phase == 'uac2'
+        run: |
+          set +e
+          python3 kernel/scripts/make_manifest.py \
+            --phase uac2 --out "$OUT/uac2.manifest.json" --allow-missing \
+            --file image="$OUT/uac2.Image" \
+            --file config="$OUT/uac2.config" \
+            --file config_diff="$OUT/config.diff" \
+            --kv source_url="${{ inputs.source_url }}" \
+            --kv source_sha256="${{ inputs.source_sha256 }}" \
+            --kv expected_model="${{ inputs.expected_model }}" \
+            --kv expected_pda="${{ inputs.expected_pda }}" \
+            --kv expected_changelist="${{ inputs.expected_changelist }}" \
+            --kv kernel_version="$KERNEL_VERSION" \
+            --kv defconfig="$DEFCONFIG" \
+            --kv localversion="$LOCALVERSION" \
+            --kv baseline_run_id="${{ inputs.baseline_run_id }}" \
+            --kv baseline_image_sha256="${{ inputs.baseline_image_sha256 }}" \
+            --kv run_id="${{ github.run_id }}"
+          true
+
+      - name: Job summary（只输出关键摘要）
+        if: always()
+        run: |
+          set +e
+          {
+            echo "## G1-A kernel build — phase=\`${{ inputs.phase }}\`"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| expected PDA | \`${{ inputs.expected_pda }}\` |"
+            echo "| expected model | \`${{ inputs.expected_model }}\` |"
+            echo "| changelist | \`${{ inputs.expected_changelist }}\` |"
+            echo "| source sha256 | \`${{ inputs.source_sha256 }}\` |"
+            echo "| defconfig | \`${DEFCONFIG:-N/A}\` |"
+            echo "| localversion | \`${LOCALVERSION:-N/A}\` |"
+            echo "| DEVICE_WRITES | **0** |"
+            echo ""
+            echo "| 门禁项 | 结果 |"
+            echo "|---|---|"
+            for f in "$RESULTS"/*.json; do
+              [ -f "$f" ] || continue
+              python3 -c "import json,sys;d=json.load(open(sys.argv[1],encoding='utf-8'));print('| \`%s\` | %s |'%(d.get('check'),d.get('status')))" "$f"
+            done
+            echo ""
+            echo "### 产物"
+            echo ""
+            for f in "$OUT"/*.sha256 "$OUT"/config.diff; do
+              [ -f "$f" ] || continue
+              echo "- \`$(basename "$f")\`: $(head -c 120 "$f" | tr -d '\n')"
+            done
+            echo ""
+            echo "> CI 只产出 artifact，不刷机（DEVICE_WRITES=0）。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          true
+
+      - name: 上传 baseline 产物
+        if: always() && inputs.phase == 'baseline'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-artifacts
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            artifacts/g1-build/baseline.config
+            artifacts/g1-build/baseline.config.sha256
+            artifacts/g1-build/baseline.Image.sha256
+            artifacts/g1-build/baseline.build.log
+            artifacts/g1-build/baseline.build.exit
+            artifacts/g1-build/baseline.manifest.json
+            artifacts/g1-build/recipe.json
+            artifacts/g1-build/recipe.env
+            artifacts/g1-build/discover.log
+            artifacts/g1-build/source.entries.txt
+            artifacts/g1-build/source.entries.count
+            artifacts/g1-build/source.tree.txt
+            artifacts/g1-build/source_name.txt
+            artifacts/g1-build/source_mode.txt
+            artifacts/g1-build/source_root.txt
+            artifacts/g1-build/inner_kernel_archive.txt
+            artifacts/g1-build/source.zip.sha256
+            artifacts/g1-build/toolchain.txt
+            artifacts/g1-build/toolchain_host.txt
+            results/*.json
+
+      - name: 上传 uac2 产物
+        if: always() && inputs.phase == 'uac2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: uac2-artifacts
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            artifacts/g1-build/uac2.config
+            artifacts/g1-build/uac2.Image
+            artifacts/g1-build/uac2.Image.sha256
+            artifacts/g1-build/uac2.System.map
+            artifacts/g1-build/uac2.System.map.sha256
+            artifacts/g1-build/uac2.Module.symvers
+            artifacts/g1-build/uac2.Module.symvers.sha256
+            artifacts/g1-build/uac2.vmlinux.symvers
+            artifacts/g1-build/uac2.vmlinux.symvers.sha256
+            artifacts/g1-build/uac2.build.log
+            artifacts/g1-build/uac2.build.exit
+            artifacts/g1-build/config.diff
+            artifacts/g1-build/uac2.manifest.json
+            artifacts/g1-build/uac2.patch_mode.txt
+            artifacts/g1-build/uac2.defconfig.change.txt
+            artifacts/g1-build/uac2.defconfig.line.txt
+            artifacts/g1-build/source_pristine.txt
+            artifacts/g1-build/baseline_ref.txt
+            artifacts/g1-build/recipe.json
+            artifacts/g1-build/recipe.env
+            results/*.json
