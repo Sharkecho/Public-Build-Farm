@@ -114,6 +114,19 @@ jobs:
       evidence_artifact: ${{ steps.keys.outputs.host_tools_evidence_artifact }}
       source_run: ${{ steps.reuse-host.outputs.run_id || github.run_id }}
     steps:
+      # The checkout has to come FIRST: `Compute layer keys` reads source.lock.json,
+      # firmware/patches/* and firmware/configs/* from the private tree, and the reuse step runs
+      # firmware/tools/layer_key.py from it. Run 36162004959 died in 5s with exit 2 because these
+      # two steps sat ahead of the checkout. Everything expensive that a cache hit may skip
+      # (free disk space, apt, prepare, build prep, the toolchain) still comes after them.
+      - name: Checkout private MT3000 source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/MT3000
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Compute layer keys (repo-local, no hashFiles)
         id: keys
         run: |
@@ -169,14 +182,6 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/* || true
           echo "== after =="; df -h /
           sudo du -xh -d1 / 2>/dev/null | sort -rh | head -20 || true
-      - name: Checkout private MT3000 source
-        uses: actions/checkout@v4
-        with:
-          repository: Sharkecho/MT3000
-          ref: ${{ inputs.source_ref }}
-          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
-          fetch-depth: 0
-          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -352,6 +357,16 @@ jobs:
       decision: ${{ steps.pack.outputs.decision }}
       source_run: ${{ steps.reuse-rust.outputs.run_id || github.run_id }}
     steps:
+      # Checkout first, for the same reason as `host-tools`: the layer-key step and the reuse
+      # step both run firmware/tools/layer_key.py out of the private source tree.
+      - name: Checkout private MT3000 source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/MT3000
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Compute layer keys (repo-local, no hashFiles)
         id: keys
         run: |
@@ -407,14 +422,6 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/* || true
           echo "== after =="; df -h /
           sudo du -xh -d1 / 2>/dev/null | sort -rh | head -20 || true
-      - name: Checkout private MT3000 source
-        uses: actions/checkout@v4
-        with:
-          repository: Sharkecho/MT3000
-          ref: ${{ inputs.source_ref }}
-          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
-          fetch-depth: 0
-          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
