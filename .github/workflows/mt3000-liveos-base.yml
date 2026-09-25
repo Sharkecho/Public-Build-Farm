@@ -1050,6 +1050,32 @@ jobs:
              rust-probe.log host-tools-probe.log base-layer-manifest.json "$DIST/"
           ( cd "$DIST" && sha256sum *.bin *.manifest *.json config.final > sha256sums-dist )
           python3 firmware/tools/offline_gate.py artifact --dir "$DIST" $KARGS $RARGS
+      - name: Flash readiness (offline part) - does this image accept this device?
+        # Runs BEFORE the candidate upload, so the report rides inside the candidate bundle and a
+        # NO-GO is not published under a name that means "passed the gates". The image itself is
+        # still preserved by the UNVERIFIED upload below - a rejection must never cost 2.6 hours.
+        run: |
+          # Self-consistency is not flashability. Two failure modes are checkable offline and
+          # neither needs the device: an image whose metadata does not list gl-mt3000 (the
+          # device's own sysupgrade would refuse it) and an image that lost a family the device
+          # needs to stay reachable (WiFi driver, AP daemon, DHCP/DNS, dropbear, netifd,
+          # firewall, flash tooling - on a GL-MT3000 the LAN is WiFi only).
+          #
+          # Exit codes: 0 GO, 1 NO-GO, 3 CONDITIONAL (the device-only checks - partition fit and
+          # the live world diff - have no snapshot here, so 3 is the expected result in CI and
+          # must not fail the build). Anything else is a real problem and must be fixed, not
+          # tolerated: `set -e` plus the explicit NO-GO branch keeps a broken tool from silently
+          # passing as "conditional".
+          set -ux
+          RC=0
+          python3 firmware/tools/flash_readiness.py --dist dist --out dist/flash-readiness.json \
+            || RC=$?
+          cat dist/flash-readiness.json 2>/dev/null | head -60 || true
+          case "$RC" in
+            0) echo "FLASH_READINESS=GO (metadata + boot families + profile verified offline)" ;;
+            3) echo "FLASH_READINESS=CONDITIONAL (device snapshot missing: run device_snapshot.sh and re-run locally before flashing)" ;;
+            *) echo "FLASH_READINESS=NO-GO rc=$RC - the image cannot be flashed as it stands"; exit 1 ;;
+          esac
       - name: Artifact name
         id: name
         run: |
