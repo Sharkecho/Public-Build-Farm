@@ -60,7 +60,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            apps/desktop/src-tauri/target
           key: rust-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/rust-toolchain.toml') }}
           restore-keys: |
             rust-${{ runner.os }}-
