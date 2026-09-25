@@ -152,6 +152,7 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
+            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -203,19 +204,6 @@ jobs:
           # keep the injected copy in the source tree fresh as well
           import shutil
           shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
-          PYEOF
-          # Record what the overlay contained. Nothing else in the bundle covers firmware/files,
-          # so without this a candidate cannot prove which Base revision went into the image -
-          # an OMR image carrying no Base runtime at all would pass every other check.
-          python3 - > base-layer-manifest.json <<'PYEOF'
-          import hashlib, json, pathlib
-          root = pathlib.Path("firmware/files")
-          files = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                   for p in sorted(root.rglob("*")) if p.is_file()}
-          stamp = json.loads((root / "etc/liveos/base-version.json").read_text())
-          print(json.dumps({"schema": "liveos-base-layer/1",
-                            "build_id": stamp.get("build_id"), "files": files},
-                           indent=2, sort_keys=True))
           PYEOF
       - name: defconfig + config gate
         run: |
@@ -302,6 +290,20 @@ jobs:
             host-tools.tar.zst
             host-tools-manifest.json
           if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Layer B: rust/LLVM (3h07m50s measured). Restores layer A, so this job only ever
+  # pays for rust.
+  # ---------------------------------------------------------------------------
+  rust-layer:
+    needs: [preflight, host-tools]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    outputs:
+      layer_artifact: ${{ steps.keys.outputs.rust_layer_artifact }}
+      evidence_artifact: ${{ steps.keys.outputs.rust_evidence_artifact }}
+      decision: ${{ steps.pack.outputs.decision }}
+    steps:
       - name: Free disk space
         run: |
           echo "== before =="; df -h /
@@ -345,6 +347,7 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
+            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -435,25 +438,12 @@ jobs:
           # Informational for THIS layer on purpose: a missed host-tool stamp costs
           # minutes to rebuild, so failing closed here would burn a whole run for nothing.
           # (The rust layer below is the one that must fail closed - it costs 3h.)
-          #
-          # The `|| RC=$?` guard is load-bearing, exactly as in the rust probe below. `make -n`
-          # itself fails (exit 2) as soon as a restored stamp schedules work for a target whose
-          # log dir is gone - that is *information about the layer*, not a broken restore, and
-          # this step runs under `set -e`. Unguarded, a failed dry run killed the step before
-          # either HOST_TOOLS_LAYER verdict could be printed, so the run reported a bare
-          # "exit code 2" with no reason (host tools had cost 80 minutes by then).
-          RC=0
-          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) \
-            > host-tools-probe.log 2>&1 || RC=$?
-          echo "host-tools probe rc=$RC"
-          if [ "$RC" -ne 0 ]; then
-            tail -n 40 host-tools-probe.log
-          fi
+          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) > host-tools-probe.log 2>&1
           if grep -qE 'staging_dir/host/bin/[a-z]|/bin/gcc |bootstrap|configure --' host-tools-probe.log; then
-            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work probe_rc=$RC"
+            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work"
             tail -n 20 host-tools-probe.log
           else
-            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED probe_rc=$RC"
+            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED"
           fi
           df -h /
       - name: Build the rust host toolchain (the expensive step)
@@ -592,6 +582,7 @@ jobs:
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
+            omr-work/omr/gl-mt3000/6.12/source/.ccache
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
         run: bash firmware/tools/prepare_sources.sh
@@ -632,6 +623,19 @@ jobs:
           d["built_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
           p.write_text(json.dumps(d, indent=2) + "\n")
           shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
+          PYEOF
+          # Record what the overlay contained. Nothing else in the bundle covers firmware/files,
+          # so without this a candidate cannot prove which Base revision went into the image -
+          # an OMR image carrying no Base runtime at all would pass every other check.
+          python3 - > base-layer-manifest.json <<'PYEOF'
+          import hashlib, json, pathlib
+          root = pathlib.Path("firmware/files")
+          files = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                   for p in sorted(root.rglob("*")) if p.is_file()}
+          stamp = json.loads((root / "etc/liveos/base-version.json").read_text())
+          print(json.dumps({"schema": "liveos-base-layer/1",
+                            "build_id": stamp.get("build_id"), "files": files},
+                           indent=2, sort_keys=True))
           PYEOF
       - name: defconfig + config gate
         run: |
@@ -713,21 +717,12 @@ jobs:
           echo "RUST_LAYER=REUSE_VERIFIED elapsed=${ELAPSED}s (dry run scheduled no rust work)"
           # Informational for the host tools: a missed stamp there costs minutes, so it
           # must not block the run. Fail-closed is reserved for the 3h08m rust layer.
-          # Guarded exactly like the rust probe above: `make -n` returns non-zero when the
-          # restored stamps schedule work, and an unguarded failure here produced a bare
-          # "exit code 2" with neither verdict.
-          HRC=0
-          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) \
-            > host-tools-probe.log 2>&1 || HRC=$?
-          echo "host-tools probe rc=$HRC"
-          if [ "$HRC" -ne 0 ]; then
-            tail -n 40 host-tools-probe.log
-          fi
+          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) > host-tools-probe.log 2>&1
           if grep -qE 'staging_dir/host/bin/[a-z]|/bin/gcc |bootstrap|configure --' host-tools-probe.log; then
-            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work probe_rc=$HRC"
+            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work"
             tail -n 20 host-tools-probe.log
           else
-            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED probe_rc=$HRC"
+            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED"
           fi
       - name: Build image
         run: |
@@ -785,7 +780,7 @@ jobs:
           name: ${{ steps.name.outputs.name }}
           path: dist/
           if-no-files-found: error
-      - name: Verify the candidate bundle
+      - name: Verify the candidate bundle (self-consistency gate)
         run: |
           # The manifests travel with the image. Verify the relationships BETWEEN them before
           # anyone flashes anything: checksums vs files, source refs vs the lock, SBOM package
