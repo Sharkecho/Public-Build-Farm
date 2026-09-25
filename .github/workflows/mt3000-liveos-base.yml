@@ -1,0 +1,784 @@
+name: MT3000 LiveOS Base (public build farm)
+# MT3000 LiveOS V3 — Base Candidate builder (Macro Gate 2 §15).
+# =============================================================
+# Produces a CANDIDATE artifact only. Never releases, never deploys, never
+# flashes. Every source is pinned by firmware/source.lock.json; the pinned
+# openwrt commit is the one cross-verified against the live device
+# (DISTRIB_REVISION r0+30806-070d8eb4d5 / kernel build time 2025-08-19 18:06:08).
+#
+# Why this is split into THREE layers
+# -----------------------------------
+# OpenWrt builds rustc from source, LLVM included, because shadowsocks-rust needs it.
+# Measured on a 4-core ubuntu-22.04 runner:
+#   host tools + cross toolchain   1h17m16s   (run 35822706026 step 12)
+#   rust host toolchain            3h07m50s   (run 35822706026 step 13)
+#   the rest of the image          ~2h36m
+# One job cannot hold any two of those plus packing/uploading under the 350-minute
+# cap - run 35795324470 proved it by being cancelled at 5h52m with nothing to show.
+# So each layer is built in its own job, handed over as an ARTIFACT, and the next
+# job refuses to start unless the layer verifies. Layer identity is computed
+# locally by firmware/tools/layer_key.py - never by hashFiles() and never by the
+# Actions cache API. The downloads cache below is a speed optimisation only:
+# correctness never depends on it.
+#
+#   host-tools  -> staging_dir/host + staging_dir/toolchain-* + their build stamps
+#   rust-layer  -> restores host-tools, adds staging_dir/<target-dir> (which holds the
+#                  rust install prefix) + staging_dir/hostpkg + the rust build stamps
+#   build       -> restores both, then builds the image
+#
+# Where rust actually installs (proven in run 35822706026, not guessed):
+#   the pinned feed Makefile passes `--prefix=$(STAGING_DIR)/host`, and
+#   rules.mk:183 sets STAGING_DIR := $(TOPDIR)/staging_dir/$(TARGET_DIR_NAME) while
+#   rules.mk:196 sets STAGING_DIR_HOST := $(abspath $(STAGING_DIR)/../host).
+#   So rustc is at staging_dir/<target-dir>/host/bin/rustc - staging_dir/host/bin is
+#   the HOST TOOLS directory and never contains rustc. The old probe looked there and
+#   cost us the whole 3h07m build. See firmware/RUST_LAYER_LAYOUT.md.
+
+# PUBLIC BUILD FARM: private MT3000 source is checked out read-only at runtime.
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private MT3000 branch/tag/SHA"
+        required: true
+        default: "main"
+        type: string
+
+concurrency:
+  group: mt3000-liveos-base-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# BUILD_FARM_SOURCE_TOKEN must be read-only. Never persist it in the checkout.
+
+env:
+  OMR_TARGET: gl-mt3000
+  OMR_KERNEL: "6.12"
+  GIT_TERMINAL_PROMPT: "0"
+  # Bumping the runner invalidates every layer: it is a layer input on purpose.
+  RUNNER_LABEL: ubuntu-22.04
+
+jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout private MT3000 source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/MT3000
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record private source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SOURCE_REPO=Sharkecho/MT3000"
+          echo "SOURCE_REF=${{ inputs.source_ref }}"
+          echo "SOURCE_SHA=$(git rev-parse HEAD)"
+          test -n "$(git rev-parse HEAD)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: python -m pip install -q pytest
+      - name: Firmware + governance tests
+        run: >-
+          python -m pytest -q
+          tests/firmware
+          tests/unit/test_write_contract.py
+          tests/unit/test_secret_scan.py
+      - name: Offline gate (repo mode)
+        run: python firmware/tools/offline_gate.py repo
+      - name: Source lock online verification
+        run: bash firmware/tools/prepare_sources.sh --verify-only
+
+  # ---------------------------------------------------------------------------
+  # Layer A: host tool set + cross toolchain (1h17m16s measured).
+  # Its key deliberately does not depend on the rust package, so a rust-side change
+  # reuses this layer instead of paying for it again.
+  # ---------------------------------------------------------------------------
+  host-tools:
+    needs: preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    outputs:
+      layer_artifact: ${{ steps.keys.outputs.host_tools_layer_artifact }}
+      evidence_artifact: ${{ steps.keys.outputs.host_tools_evidence_artifact }}
+    steps:
+      - name: Free disk space
+        run: |
+          echo "== before =="; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android \
+                      /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+                      /usr/local/share/boost /usr/local/share/chromium \
+                      /usr/local/lib/node_modules /opt/microsoft/msedge \
+                      /opt/microsoft/powershell /usr/share/miniconda \
+                      /usr/share/firefox /opt/az || true
+          sudo find /opt/hostedtoolcache -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          sudo docker image prune -af || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          echo "== after =="; df -h /
+          sudo du -xh -d1 / 2>/dev/null | sort -rh | head -20 || true
+      - name: Checkout private MT3000 source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/MT3000
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync scons squashfs-tools subversion swig texinfo \
+            unzip help2man zlib1g-dev libelf-dev file wget curl quilt patch ccache time zstd
+      - name: Compute layer keys (repo-local, no hashFiles)
+        id: keys
+        run: |
+          python3 firmware/tools/layer_key.py emit \
+            --runner "$RUNNER_LABEL" --out layer-keys.json --github-output "$GITHUB_OUTPUT"
+      - name: Cache downloads (speed only - correctness never depends on this)
+        uses: actions/cache@v4
+        with:
+          path: |
+            omr-work/omr/gl-mt3000/6.12/source/dl
+            omr-work/omr/gl-mt3000/6.12/source/.ccache
+          key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
+      - name: Prepare pinned sources
+        run: bash firmware/tools/prepare_sources.sh
+      - name: Build prep (OMR build.sh, ONLY_PREPARE)
+        env:
+          OMR_FEED: feeds/openmptcprouter
+          OMR_LOG: "yes"
+        run: |
+          cd omr-work/omr
+          # Deterministic version string (device cross-check: v0.63-6.12).
+          # build.sh derives OMR_RELEASE from `git describe --tags`, which is
+          # UNSTABLE here: the snapshot tag v0.64-snapshot co-points at the very
+          # same commit as v0.63. The lock is the only trusted source.
+          OMR_RELEASE="$(python3 -c "import json;print(json.load(open('../../firmware/source.lock.json'))['sources']['omr']['ref'])")"
+          export OMR_RELEASE
+          echo "OMR_RELEASE=$OMR_RELEASE"
+          ONLY_PREPARE=yes ./build.sh
+      - name: Inject Base layer (fragment + files + identity)
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          cat firmware/configs/mt3000_base.config.fragment >> "$SRC/.config"
+          echo "CONFIG_CCACHE=y" >> "$SRC/.config"   # build speed only, not a capability
+          rm -rf "$SRC/files"
+          cp -r firmware/files "$SRC/files"
+          # Two patch bases, because $SRC/feeds/<feed> is a SYMLINK: OMR declares its
+          # feeds with `src-link`, and GNU patch 2.7.6 will not resolve a target through
+          # that symlink ("can't find file to patch", runs 35758470855 / 35759714299 —
+          # --follow-symlinks does not help). Feed patches therefore go in one level up,
+          # where the same relative path is a real directory.
+          for p in firmware/patches/*.patch; do
+            [ -f "$p" ] || continue
+            case "$p" in */feed-*) continue ;; esac   # handled by the loop below
+            echo "applying $p (base: $SRC)"
+            patch -d "$SRC" -p1 < "$p"
+          done
+          for p in firmware/patches/feed-*.patch; do
+            [ -f "$p" ] || continue
+            echo "applying $p (base: omr-work/omr)"
+            patch -d omr-work/omr -p1 < "$p"
+          done
+          python3 - "$SRC" <<'PYEOF'
+          import datetime, json, pathlib, sys
+          p = pathlib.Path("firmware/files/etc/liveos/base-version.json")
+          d = json.loads(p.read_text())
+          d["build_id"] = "gh-${{ github.run_id }}-${{ github.run_number }}"
+          d["built_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          p.write_text(json.dumps(d, indent=2) + "\n")
+          # keep the injected copy in the source tree fresh as well
+          import shutil
+          shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
+          PYEOF
+      - name: defconfig + config gate
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== pre-defconfig evidence =="
+          grep -n 'MT3000-BASE-FRAGMENT' "$SRC/.config" || echo "NO FRAGMENT MARKERS"
+          grep -n 'VERSION_NUMBER\|ARM64_MODULE_PLTS\|TCP_CONG_BBR2' "$SRC/.config" || echo "NO REQUIRED SYMBOLS PRE-DEFCONFIG"
+          make -C "$SRC" defconfig
+          echo "== post-defconfig evidence =="
+          grep -n 'VERSION_NUMBER\|ARM64_MODULE_PLTS\|TCP_CONG_BBR2' "$SRC/.config" || echo "NO REQUIRED SYMBOLS POST-DEFCONFIG"
+          sh firmware/tools/check_config.sh "$SRC/.config"
+      - name: Build host tools + cross toolchain (prerequisites of the single-package rust target)
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== disk before prerequisites =="; df -h /
+          # A bare `make package/.../host/compile` is NOT dependency-aware about the host
+          # tool set the way a full `make -j` is. Run 35820334015 died 58s into the rust
+          # step for exactly that reason:
+          #   bash: .../staging_dir/host/bin/libdeflate-gzip: No such file or directory
+          #   tar: This does not look like a tar archive
+          # The rust package ships PKG_SOURCE=rustc-1.87.0-src.tar.gz and unpacks it with
+          # that host tool, which only exists after `make tools/install`.
+          ( cd "$SRC" && make -j"$(( $(nproc) + 1 ))" IGNORE_ERRORS=m tools/install ) > host-tools.log 2>&1 \
+            || { echo "=== HOST TOOLS BUILD FAILED (last 200 log lines) ==="; tail -n 200 host-tools.log
+                 echo "=== disk at failure ==="; df -h /
+                 exit 1; }
+          tail -n 5 host-tools.log
+          # The [host] variant is not a plain host build: its configure args write
+          # target.aarch64_cortex-a53.{cc,ar,ranlib} from TARGET_* and musl-root from
+          # TOOLCHAIN_ROOT_DIR (see the pinned feed Makefile), and it is configured with
+          # --target=aarch64_cortex-a53,x86_64. So the cross toolchain has to exist, not
+          # just the host tools. It is also the same host tool set (cmake, ninja, python3)
+          # the from-source LLVM build needs.
+          ( cd "$SRC" && make -j"$(( $(nproc) + 1 ))" IGNORE_ERRORS=m toolchain/install ) > host-toolchain.log 2>&1 \
+            || { echo "=== CROSS TOOLCHAIN BUILD FAILED (last 200 log lines) ==="; tail -n 200 host-toolchain.log
+                 echo "=== disk at failure ==="; df -h /
+                 exit 1; }
+          tail -n 5 host-toolchain.log
+          test -x "$SRC/staging_dir/host/bin/libdeflate-gzip" \
+            || { echo "MISSING libdeflate-gzip after tools/install"; ls -l "$SRC/staging_dir/host/bin/" | head -40; exit 1; }
+          ls "$SRC"/staging_dir/toolchain-*/bin/*-gcc >/dev/null 2>&1 \
+            || { echo "MISSING cross gcc after toolchain/install"; ls -l "$SRC"/staging_dir/ ; exit 1; }
+          echo "== disk after prerequisites =="; df -h /
+      - name: Pack the host tools layer + write its manifest
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== disk before packing =="; df -h /
+          # The reuse set is derived from the tree, not assumed: layer_contents.py globs
+          # staging_dir/*/host/bin/rustc (etc.) and records every path it packs, so the
+          # restore side can check the manifest against reality (fail closed).
+          python3 firmware/tools/layer_contents.py pack \
+            --src "$SRC" --layer host_tools \
+            --out host-tools.tar.zst --manifest host-tools-manifest.json \
+            --identity layer-keys.json
+          echo "== disk after packing =="; df -h /
+          {
+            echo "### host tools layer"
+            echo ""
+            echo "- layer key: \`${{ steps.keys.outputs.host_tools_layer_key }}\`"
+            echo "- artifact: \`${{ steps.keys.outputs.host_tools_layer_artifact }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload host tools evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.keys.outputs.host_tools_evidence_artifact }}
+          path: |
+            host-tools.log
+            host-toolchain.log
+            layer-keys.json
+            host-tools-manifest.json
+            omr-work/omr/gl-mt3000/6.12/source/logs
+            omr-work/omr/gl-mt3000/6.12/source/.config
+          if-no-files-found: ignore
+      - name: Upload host tools layer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.keys.outputs.host_tools_layer_artifact }}
+          path: |
+            host-tools.tar.zst
+            host-tools-manifest.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Layer B: rust/LLVM (3h07m50s measured). Restores layer A, so this job only ever
+  # pays for rust.
+  # ---------------------------------------------------------------------------
+  rust-layer:
+    needs: [preflight, host-tools]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    outputs:
+      layer_artifact: ${{ steps.keys.outputs.rust_layer_artifact }}
+      evidence_artifact: ${{ steps.keys.outputs.rust_evidence_artifact }}
+      decision: ${{ steps.pack.outputs.decision }}
+    steps:
+      - name: Free disk space
+        run: |
+          echo "== before =="; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android \
+                      /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+                      /usr/local/share/boost /usr/local/share/chromium \
+                      /usr/local/lib/node_modules /opt/microsoft/msedge \
+                      /opt/microsoft/powershell /usr/share/miniconda \
+                      /usr/share/firefox /opt/az || true
+          sudo find /opt/hostedtoolcache -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          sudo docker image prune -af || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          echo "== after =="; df -h /
+          sudo du -xh -d1 / 2>/dev/null | sort -rh | head -20 || true
+      - name: Checkout private MT3000 source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/MT3000
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync scons squashfs-tools subversion swig texinfo \
+            unzip help2man zlib1g-dev libelf-dev file wget curl quilt patch ccache time zstd
+      - name: Compute layer keys (repo-local, no hashFiles)
+        id: keys
+        run: |
+          python3 firmware/tools/layer_key.py emit \
+            --runner "$RUNNER_LABEL" --out layer-keys.json --github-output "$GITHUB_OUTPUT"
+      - name: Cache downloads (speed only - correctness never depends on this)
+        uses: actions/cache@v4
+        with:
+          path: |
+            omr-work/omr/gl-mt3000/6.12/source/dl
+            omr-work/omr/gl-mt3000/6.12/source/.ccache
+          key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
+      - name: Prepare pinned sources
+        run: bash firmware/tools/prepare_sources.sh
+      - name: Build prep (OMR build.sh, ONLY_PREPARE)
+        env:
+          OMR_FEED: feeds/openmptcprouter
+          OMR_LOG: "yes"
+        run: |
+          cd omr-work/omr
+          OMR_RELEASE="$(python3 -c "import json;print(json.load(open('../../firmware/source.lock.json'))['sources']['omr']['ref'])")"
+          export OMR_RELEASE
+          echo "OMR_RELEASE=$OMR_RELEASE"
+          ONLY_PREPARE=yes ./build.sh
+      - name: Inject Base layer (fragment + files + identity)
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          cat firmware/configs/mt3000_base.config.fragment >> "$SRC/.config"
+          echo "CONFIG_CCACHE=y" >> "$SRC/.config"   # build speed only, not a capability
+          rm -rf "$SRC/files"
+          cp -r firmware/files "$SRC/files"
+          for p in firmware/patches/*.patch; do
+            [ -f "$p" ] || continue
+            case "$p" in */feed-*) continue ;; esac   # handled by the loop below
+            echo "applying $p (base: $SRC)"
+            patch -d "$SRC" -p1 < "$p"
+          done
+          for p in firmware/patches/feed-*.patch; do
+            [ -f "$p" ] || continue
+            echo "applying $p (base: omr-work/omr)"
+            patch -d omr-work/omr -p1 < "$p"
+          done
+          python3 - "$SRC" <<'PYEOF'
+          import datetime, json, pathlib, sys, shutil
+          p = pathlib.Path("firmware/files/etc/liveos/base-version.json")
+          d = json.loads(p.read_text())
+          d["build_id"] = "gh-${{ github.run_id }}-${{ github.run_number }}"
+          d["built_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          p.write_text(json.dumps(d, indent=2) + "\n")
+          shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
+          PYEOF
+      - name: defconfig + config gate
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== pre-defconfig evidence =="
+          grep -n 'MT3000-BASE-FRAGMENT' "$SRC/.config" || echo "NO FRAGMENT MARKERS"
+          grep -n 'VERSION_NUMBER\|ARM64_MODULE_PLTS\|TCP_CONG_BBR2' "$SRC/.config" || echo "NO REQUIRED SYMBOLS PRE-DEFCONFIG"
+          make -C "$SRC" defconfig
+          echo "== post-defconfig evidence =="
+          grep -n 'VERSION_NUMBER\|ARM64_MODULE_PLTS\|TCP_CONG_BBR2' "$SRC/.config" || echo "NO REQUIRED SYMBOLS POST-DEFCONFIG"
+          sh firmware/tools/check_config.sh "$SRC/.config"
+      - name: Fetch the host tools layer artifact
+        id: layer-a
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.host-tools.outputs.layer_artifact }}
+          path: incoming-host-tools
+      - name: Restore the host tools layer (hard gate)
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          MAN=incoming-host-tools/host-tools-manifest.json
+          echo "== layer key check =="
+          python3 firmware/tools/layer_key.py verify --layer host_tools --runner "$RUNNER_LABEL" \
+            --manifest "$MAN" | tee layer-a-verify.txt
+          grep -q 'HOST_TOOLS_LAYER=REUSE' layer-a-verify.txt \
+            || { echo "HOST_TOOLS_LAYER=REGENERATION_REQUIRED reason=key-mismatch"; exit 1; }
+          echo "== tarball integrity =="
+          WANT="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tarball']['sha256'])" "$MAN")"
+          GOT="$(sha256sum incoming-host-tools/host-tools.tar.zst | cut -d' ' -f1)"
+          echo "want=$WANT got=$GOT"
+          [ "$WANT" = "$GOT" ] || { echo "tarball-sha256-mismatch file=host-tools.tar.zst"; exit 1; }
+          echo "== install and prove =="
+          df -h /
+          tar --zstd -xf incoming-host-tools/host-tools.tar.zst -C "$SRC"
+          python3 firmware/tools/layer_contents.py verify --src "$SRC" --layer host_tools --manifest "$MAN"
+          # The very tools whose absence killed run 35820334015 must be asserted here too:
+          # the rust package unpacks its 581M source tarball with libdeflate-gzip, and its
+          # [host] variant is configured for --target=aarch64_cortex-a53,x86_64 so it needs
+          # the cross compiler, not just the host tools.
+          test -x "$SRC/staging_dir/host/bin/libdeflate-gzip" \
+            || { echo "MISSING libdeflate-gzip after restoring the host tools layer"; ls -l "$SRC/staging_dir/host/bin/" | head -40; exit 1; }
+          ls "$SRC"/staging_dir/toolchain-*/bin/*-gcc >/dev/null 2>&1 \
+            || { echo "MISSING cross gcc after restoring the host tools layer"; ls -l "$SRC"/staging_dir/ ; exit 1; }
+          # Dry run: shows whether the restored stamps are honoured, without doing work.
+          # Informational for THIS layer on purpose: a missed host-tool stamp costs
+          # minutes to rebuild, so failing closed here would burn a whole run for nothing.
+          # (The rust layer below is the one that must fail closed - it costs 3h.)
+          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) > host-tools-probe.log 2>&1
+          if grep -qE 'staging_dir/host/bin/[a-z]|/bin/gcc |bootstrap|configure --' host-tools-probe.log; then
+            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work"
+            tail -n 20 host-tools-probe.log
+          else
+            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED"
+          fi
+          df -h /
+      - name: Build the rust host toolchain (the expensive step)
+        run: |
+          set -ux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== disk before rust =="; df -h /
+          # The build error names the canonical subdir, so prefer that spelling.
+          TARGET="package/feeds/openmptcprouter/rust/host/compile"
+          ( cd "$SRC" && make -j"$(( $(nproc) + 1 ))" IGNORE_ERRORS=m "$TARGET" ) > rust-build.log 2>&1 \
+            || { echo "=== RUST BUILD FAILED (last 400 log lines) ==="; tail -n 400 rust-build.log
+                 # rust-build.log only holds the make wrapper; the real cause is in the
+                 # per-package log (that is where the libdeflate-gzip error surfaced).
+                 echo "=== per-package rust log (last 120 lines) ==="
+                 tail -n 120 "$SRC/logs/package/feeds/openmptcprouter/rust/host-compile.txt" 2>/dev/null \
+                   || echo "(no per-package log)"
+                 echo "=== disk at failure ==="; df -h /
+                 exit 1; }
+          tail -n 20 rust-build.log
+          echo "== disk after rust =="; df -h /
+      - name: Pack the rust layer + write its manifests
+        id: pack
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== disk before packing =="; df -h /
+          # Records the *discovered* install prefix (staging_dir/<target-dir>/host) and
+          # every path it packs. If no rustc exists the tool exits non-zero with
+          # LAYER_CONTENTS=REGENERATION_REQUIRED - it never assumes a path.
+          python3 firmware/tools/layer_contents.py pack \
+            --src "$SRC" --layer rust_toolchain \
+            --out rust-layer.tar.zst --manifest rust-layer-manifest.json \
+            --identity layer-keys.json
+          python3 firmware/tools/liveos_manifest.py compatibility \
+            --lock firmware/source.lock.json --out rust-compatibility-manifest.json
+          echo "decision=REUSE" >> "$GITHUB_OUTPUT"
+          # Recorded, not assumed: if AUTOREMOVE were y, OpenWrt would clean-build any
+          # target it deems out of date and silently discard this whole layer.
+          if grep -q '^CONFIG_AUTOREMOVE=y' "$SRC/.config"; then
+            echo "RUST_LAYER=UNSAFE reason=CONFIG_AUTOREMOVE would clean-build the layer"
+          else
+            echo "RUST_LAYER=SAFE config_autoremove=off"
+          fi
+          echo "== disk after packing =="; df -h /
+          {
+            echo "### rust layer"
+            echo ""
+            echo "- layer key: \`${{ steps.keys.outputs.rust_layer_key }}\`"
+            echo "- artifact: \`${{ steps.keys.outputs.rust_layer_artifact }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload rust build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.keys.outputs.rust_evidence_artifact }}
+          path: |
+            rust-build.log
+            host-tools-probe.log
+            layer-keys.json
+            layer-a-verify.txt
+            rust-layer-manifest.json
+            rust-compatibility-manifest.json
+            omr-work/omr/gl-mt3000/6.12/source/logs
+            omr-work/omr/gl-mt3000/6.12/source/.config
+          if-no-files-found: ignore
+      - name: Upload rust layer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.keys.outputs.rust_layer_artifact }}
+          path: |
+            rust-layer.tar.zst
+            rust-layer-manifest.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Image build. Restores both layers; refuses to build when either is not reusable.
+  # ---------------------------------------------------------------------------
+  build:
+    needs: [preflight, host-tools, rust-layer]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - name: Free disk space
+        run: |
+          echo "== before =="; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android \
+                      /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+                      /usr/local/share/boost /usr/local/share/chromium \
+                      /usr/local/lib/node_modules /opt/microsoft/msedge \
+                      /opt/microsoft/powershell /usr/share/miniconda \
+                      /usr/share/firefox /opt/az || true
+          sudo find /opt/hostedtoolcache -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          sudo docker image prune -af || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          echo "== after =="; df -h /
+      - name: Checkout private MT3000 source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/MT3000
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync scons squashfs-tools subversion swig texinfo \
+            unzip help2man zlib1g-dev libelf-dev file wget curl quilt patch ccache time zstd
+      - name: Compute layer keys (repo-local, no hashFiles)
+        id: keys
+        run: |
+          python3 firmware/tools/layer_key.py emit \
+            --runner "$RUNNER_LABEL" --out layer-keys.json --github-output "$GITHUB_OUTPUT"
+      - name: Fetch the host tools layer artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.host-tools.outputs.layer_artifact }}
+          path: incoming-host-tools
+      - name: Fetch the rust layer artifact
+        id: layer
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.rust-layer.outputs.layer_artifact }}
+          path: incoming-rust
+      - name: Cache downloads (speed only - correctness never depends on this)
+        uses: actions/cache@v4
+        with:
+          path: |
+            omr-work/omr/gl-mt3000/6.12/source/dl
+            omr-work/omr/gl-mt3000/6.12/source/.ccache
+          key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
+      - name: Prepare pinned sources
+        run: bash firmware/tools/prepare_sources.sh
+      - name: Build prep (OMR build.sh, ONLY_PREPARE)
+        env:
+          OMR_FEED: feeds/openmptcprouter
+          OMR_LOG: "yes"
+        run: |
+          cd omr-work/omr
+          OMR_RELEASE="$(python3 -c "import json;print(json.load(open('../../firmware/source.lock.json'))['sources']['omr']['ref'])")"
+          export OMR_RELEASE
+          echo "OMR_RELEASE=$OMR_RELEASE"
+          ONLY_PREPARE=yes ./build.sh
+      - name: Inject Base layer (fragment + files + identity)
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          cat firmware/configs/mt3000_base.config.fragment >> "$SRC/.config"
+          echo "CONFIG_CCACHE=y" >> "$SRC/.config"
+          rm -rf "$SRC/files"
+          cp -r firmware/files "$SRC/files"
+          for p in firmware/patches/*.patch; do
+            [ -f "$p" ] || continue
+            case "$p" in */feed-*) continue ;; esac
+            echo "applying $p (base: $SRC)"
+            patch -d "$SRC" -p1 < "$p"
+          done
+          for p in firmware/patches/feed-*.patch; do
+            [ -f "$p" ] || continue
+            echo "applying $p (base: omr-work/omr)"
+            patch -d omr-work/omr -p1 < "$p"
+          done
+          python3 - "$SRC" <<'PYEOF'
+          import datetime, json, pathlib, sys, shutil
+          p = pathlib.Path("firmware/files/etc/liveos/base-version.json")
+          d = json.loads(p.read_text())
+          d["build_id"] = "gh-${{ github.run_id }}-${{ github.run_number }}"
+          d["built_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          p.write_text(json.dumps(d, indent=2) + "\n")
+          shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
+          PYEOF
+      - name: defconfig + config gate
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          make -C "$SRC" defconfig
+          sh firmware/tools/check_config.sh "$SRC/.config"
+      - name: Verify and install the rust layer (hard gate)
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          BT=incoming-rust/rust-layer-manifest.json
+          AT=incoming-host-tools/host-tools-manifest.json
+          echo "== layer key check (host tools) =="
+          python3 firmware/tools/layer_key.py verify --layer host_tools --runner "$RUNNER_LABEL" \
+            --manifest "$AT" | tee layer-verify-host-tools.txt
+          grep -q 'HOST_TOOLS_LAYER=REUSE' layer-verify-host-tools.txt \
+            || { echo "HOST_TOOLS_LAYER=REGENERATION_REQUIRED reason=key-mismatch"; exit 1; }
+          echo "== layer key check (rust) =="
+          python3 firmware/tools/layer_key.py verify --layer rust_toolchain --runner "$RUNNER_LABEL" \
+            --manifest "$BT" | tee layer-verify.txt
+          grep -q 'RUST_LAYER=REUSE' layer-verify.txt \
+            || { echo "RUST_LAYER=REGENERATION_REQUIRED reason=key-mismatch"; exit 1; }
+          echo "== tarball integrity =="
+          for pair in "incoming-host-tools/host-tools.tar.zst:$AT" "incoming-rust/rust-layer.tar.zst:$BT"; do
+            TARBALL="${pair%%:*}"; MAN="${pair##*:}"
+            WANT="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tarball']['sha256'])" "$MAN")"
+            GOT="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+            echo "want=$WANT got=$GOT ($TARBALL)"
+            [ "$WANT" = "$GOT" ] || { echo "tarball-sha256-mismatch file=$TARBALL"; exit 1; }
+          done
+          echo "== config guard =="
+          if grep -q '^CONFIG_AUTOREMOVE=y' "$SRC/.config"; then
+            echo "RUST_LAYER=REGENERATION_REQUIRED reason=CONFIG_AUTOREMOVE would clean-build the layer"
+            exit 1
+          fi
+          echo "== install the layers (host tools first: the rust layer is built on top of it) =="
+          df -h /
+          tar --zstd -xf incoming-host-tools/host-tools.tar.zst -C "$SRC"
+          tar --zstd -xf incoming-rust/rust-layer.tar.zst -C "$SRC"
+          echo "== the manifests must describe reality =="
+          python3 firmware/tools/layer_contents.py verify --src "$SRC" --layer host_tools --manifest "$AT"
+          python3 firmware/tools/layer_contents.py verify --src "$SRC" --layer rust_toolchain --manifest "$BT"
+          echo "== rustc really is where the manifest says =="
+          RUSTC="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['install']['rustc'])" "$BT")"
+          echo "rustc=$RUSTC"
+          "$SRC/$RUSTC" --version
+          df -h /
+      - name: Prove the layer is actually reused (bounded probe)
+        run: |
+          set -ux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          START=$(date +%s)
+          # A DRY RUN, deliberately. The previous probe ran the real target under
+          # `timeout 900`; that can *itself* start the 3h08m build it is supposed to
+          # detect, because host-build.mk's prepare recipe begins with
+          # `rm -rf $(HOST_BUILD_DIR)`. `make -n` prints the recipes instead of running
+          # them, so a stamp we failed to restore shows up as scheduled rust work and we
+          # fail closed for free.
+          ( cd "$SRC" && timeout 300 make -n "package/feeds/openmptcprouter/rust/host/compile" ) \
+            > rust-probe.log 2>&1
+          RC=$?
+          ELAPSED=$(( $(date +%s) - START ))
+          echo "probe_rc=$RC elapsed=${ELAPSED}s"
+          if [ "$RC" -ne 0 ]; then
+            tail -n 40 rust-probe.log
+            echo "RUST_LAYER=PARTIAL_FALLBACK rc=$RC elapsed=${ELAPSED}s"
+            echo "RUST_LAYER=REGENERATION_REQUIRED"
+            echo "make -n could not be evaluated; refusing to start the full image build."
+            exit 1
+          fi
+          if grep -qE 'x\.py|rustc-1\.87\.0-src|build/dist|install\.sh|rustlib' rust-probe.log; then
+            tail -n 60 rust-probe.log
+            echo "RUST_LAYER=PARTIAL_FALLBACK elapsed=${ELAPSED}s"
+            echo "RUST_LAYER=REGENERATION_REQUIRED"
+            echo "The dry run still schedules rust work: the rust layer was NOT reused."
+            exit 1
+          fi
+          echo "RUST_LAYER=REUSE_VERIFIED elapsed=${ELAPSED}s (dry run scheduled no rust work)"
+          # Informational for the host tools: a missed stamp there costs minutes, so it
+          # must not block the run. Fail-closed is reserved for the 3h08m rust layer.
+          ( cd "$SRC" && timeout 300 make -n tools/install toolchain/install ) > host-tools-probe.log 2>&1
+          if grep -qE 'staging_dir/host/bin/[a-z]|/bin/gcc |bootstrap|configure --' host-tools-probe.log; then
+            echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work"
+            tail -n 20 host-tools-probe.log
+          else
+            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED"
+          fi
+      - name: Build image
+        run: |
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          echo "== disk before build =="; df -h /
+          ( cd "$SRC" && make -j"$(( $(nproc) + 1 ))" IGNORE_ERRORS=m ) > "$SRC/build.log" 2>&1 \
+            || { echo "=== BUILD FAILED (last 600 log lines) ==="; tail -n 600 "$SRC/build.log"
+                 echo "=== disk at failure ==="; df -h /
+                 echo "=== biggest trees in the source dir ==="
+                 du -xh -d2 "$SRC" 2>/dev/null | sort -rh | head -15
+                 exit 1; }
+          tail -n 30 "$SRC/build.log"
+          echo "== disk after build =="; df -h /
+      - name: Collect artifacts + manifests + SBOM
+        run: |
+          set -eux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          DIST=dist; mkdir -p "$DIST"
+          find "$SRC/bin/targets/mediatek/filogic" -maxdepth 1 -type f \
+            \( -name '*.bin' -o -name '*.manifest' -o -name 'profiles.json' -o -name 'sha256sums' \) \
+            -exec cp {} "$DIST/" \;
+          cp "$SRC/.config" "$DIST/config.final"
+          KCFG="$(find "$SRC/build_dir" -maxdepth 5 -path '*linux-6.12*' -name '.config' 2>/dev/null | head -1)"
+          ROOTFS="$(find "$SRC/build_dir" -maxdepth 2 -type d -name 'root-*' 2>/dev/null | head -1)"
+          [ -n "$KCFG" ] && cp "$KCFG" "$DIST/kernel.config"
+          MANIFEST="$(ls "$DIST"/*.manifest | head -1)"
+          KARGS=""; [ -n "$KCFG" ] && KARGS="--kernel-config $KCFG"
+          RARGS=""; [ -n "$ROOTFS" ] && RARGS="--rootfs $ROOTFS"
+          python3 firmware/tools/liveos_manifest.py capability \
+            --requirements firmware/capability_requirements.json \
+            --manifest "$MANIFEST" $KARGS $RARGS \
+            --out "$DIST/capability-manifest.json"
+          python3 firmware/tools/liveos_manifest.py compatibility \
+            --lock firmware/source.lock.json --out "$DIST/compatibility-manifest.json"
+          IMG="$(ls "$DIST"/*sysupgrade*.bin | head -1)"
+          python3 firmware/tools/liveos_manifest.py sbom --manifest "$MANIFEST" --image "$IMG" \
+            --name "MT3000-LiveOS-V3-Base-Candidate" --out "$DIST/sbom.spdx.json"
+          python3 firmware/tools/liveos_manifest.py build \
+            --lock firmware/source.lock.json --config "$SRC/.config" --out "$DIST" \
+            --build-id "gh-${{ github.run_id }}-${{ github.run_number }}" \
+            --git-sha "$(git rev-parse HEAD)"
+          cp layer-keys.json layer-verify.txt layer-verify-host-tools.txt \
+             rust-probe.log host-tools-probe.log "$DIST/"
+          ( cd "$DIST" && sha256sum *.bin *.manifest *.json config.final > sha256sums-dist )
+          python3 firmware/tools/offline_gate.py artifact --dir "$DIST" $KARGS $RARGS
+      - name: Artifact name
+        id: name
+        run: |
+          OMR_SHORT=$(git -C omr-work/omr rev-parse --short=7 HEAD)
+          OW_SHORT=$(git -C omr-work/omr/gl-mt3000/6.12/source rev-parse --short=7 HEAD)
+          echo "name=MT3000-LiveOS-V3-Base-Candidate-omr${OMR_SHORT}-ow${OW_SHORT}-run${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.name }}
+          path: dist/
+          if-no-files-found: error
+      - name: Upload build evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-evidence-${{ github.run_id }}
+          path: |
+            omr-work/omr/gl-mt3000/6.12/source/build.log
+            omr-work/omr/gl-mt3000/6.12/source/.config
+            omr-work/omr/gl-mt3000/6.12/source/logs
+            layer-keys.json
+            layer-verify.txt
+            layer-verify-host-tools.txt
+            rust-probe.log
+            host-tools-probe.log
+          if-no-files-found: ignore
