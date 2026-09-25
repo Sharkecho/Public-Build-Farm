@@ -1071,6 +1071,12 @@ jobs:
           python3 firmware/tools/flash_readiness.py --dist dist --out dist/flash-readiness.json \
             || RC=$?
           cat dist/flash-readiness.json 2>/dev/null | head -60 || true
+          # The report lands in dist/ AFTER the checksum list was written, so add it: a candidate
+          # whose own manifest does not cover one of its files is exactly the kind of internal
+          # inconsistency verify_candidate.py exists to catch.
+          if [ -f dist/flash-readiness.json ] && [ -f dist/sha256sums-dist ]; then
+            ( cd dist && sha256sum flash-readiness.json >> sha256sums-dist )
+          fi
           case "$RC" in
             0) echo "FLASH_READINESS=GO (metadata + boot families + profile verified offline)" ;;
             3) echo "FLASH_READINESS=CONDITIONAL (device snapshot missing: run device_snapshot.sh and re-run locally before flashing)" ;;
