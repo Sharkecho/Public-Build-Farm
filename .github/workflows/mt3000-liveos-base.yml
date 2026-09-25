@@ -929,28 +929,24 @@ jobs:
           sudo ln -sf "$LLVM_BIN/clang" /usr/bin/clang
           command -v clang; clang --version | head -1
           /usr/bin/opt --version | head -1
-      # Order the build by RISK, not by make's own order. O44 died 2h40m into the image build on
-      # package/feeds/openmptcprouter/mptcp-bpf-bkup because the runner's host LLVM was
-      # incomplete. Compiling that package first turns a late 2h40m surprise into a ~5 minute
-      # one - and it is not extra work: this is the first package the full build would have
-      # compiled anyway, and whatever it produces lands in build_dir and the ccache for the
-      # next run.
-      - name: Probe the riskiest package before the full build (BPF schedulers)
+      # Clear the diagnostic error markers so the verdict after the build is about THIS build.
+      # `make IGNORE_ERRORS=m` keeps going when a package fails and still exits 0: run #6 was
+      # reported as "Build image: success" while run #1's stale logs/…/error.txt sat in the tree,
+      # and nothing in the pipeline would have noticed a real package failure either. The next
+      # step asserts these files do not come back.
+      - name: Clear stale build error markers
         run: |
-          set -ux
           SRC=omr-work/omr/gl-mt3000/6.12/source
-          START=$(date +%s)
-          ( cd "$SRC" && timeout 2400 make package/feeds/openmptcprouter/mptcp-bpf-bkup/compile ) \
-            > bpf-probe.log 2>&1
-          RC=$?
-          echo "bpf_probe_rc=$RC elapsed=$(( $(date +%s) - START ))s"
-          if [ "$RC" -ne 0 ]; then
-            echo "=== mptcp-bpf-bkup failed (this is the package that cost run 36117008724 2h40m) ==="
-            tail -n 120 bpf-probe.log
-            echo "BPF_SCHEDULERS=FAIL rc=$RC"
-            exit 1
-          fi
-          echo "== ccache after the probe =="; ccache -s 2>/dev/null | head -20 || true
+          rm -f "$SRC/logs/package/error.txt" "$SRC/logs/tools/error.txt"
+          ls -l "$SRC/logs" 2>/dev/null | head -5 || true
+      # The risk-ordering probe that used to sit here (a bounded `make package/…/mptcp-bpf-bkup/
+      # compile` before the full build) was WRONG BY DESIGN and is gone: building that package in
+      # isolation drags in package/kernel/linux, which cannot be built before the target/kernel
+      # stage, so the probe failed with `ERROR: package/kernel/linux failed to build` (run
+      # 36190500101) while the full build compiles every BPF scheduler fine - run 36162560711's
+      # own logs show all six mptcp-bpf-* packages compiling at 19:31-19:32Z. The pipeline learns
+      # "did anything actually fail?" from the error markers below instead of from a reordered
+      # build.
       - name: Build image
         run: |
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -963,6 +959,33 @@ jobs:
                  exit 1; }
           tail -n 30 "$SRC/build.log"
           echo "== disk after build =="; df -h /
+      # The verdict `IGNORE_ERRORS=m` does not give us: a package may fail while make still exits
+      # 0, and the image is then assembled without it. This step names every such failure (the
+      # error markers were cleared just before the build, so they are all from this run) and
+      # fails the job - while the UNVERIFIED upload below still keeps the artifact, because a
+      # component that did not build must never also cost us the 2.6 hours that did.
+      - name: Any package or tool that failed to build?
+        run: |
+          set -ux
+          SRC=omr-work/omr/gl-mt3000/6.12/source
+          FAILED=0
+          for marker in "$SRC/logs/package/error.txt" "$SRC/logs/tools/error.txt"; do
+            if [ -f "$marker" ]; then
+              FAILED=1
+              echo "=== ${marker#$SRC/} ==="
+              cat "$marker"
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "BUILD_COMPLETENESS=FAIL (make exited 0 with IGNORE_ERRORS=m; the image is missing these)"
+            exit 1
+          fi
+          echo "BUILD_COMPLETENESS=OK (no package or tool failed)"
+          # The BPF schedulers are this project's core capability: prove they are in the image
+          # tree instead of trusting make's exit code.
+          SCHED="$(find "$SRC/build_dir" -path '*mptcp-bpf-*' -name 'mptcp_bpf_*.o' 2>/dev/null | wc -l)"
+          echo "bpf_scheduler_objects=$SCHED"
+          [ "$SCHED" -ge 6 ] || { echo "BPF_SCHEDULERS=FAIL found=$SCHED (expected >= 6)"; exit 1; }
       # Pack the package cache even when the build FAILED (if: always()): the objects that did
       # compile are the most valuable thing a failed run can leave behind, and today a failure
       # at 2h40m throws all of them away. `continue-on-error: true` on both steps: a speed layer
@@ -992,6 +1015,10 @@ jobs:
           if-no-files-found: ignore
           compression-level: 0
       - name: Collect artifacts + manifests + SBOM
+        # Runs even when the completeness verdict above failed: `dist/` is how the image reaches
+        # the UNVERIFIED upload. Without this, one failed check would again take 2.6 hours of
+        # built image down with it - the exact mistake O53 was written about.
+        if: always()
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
