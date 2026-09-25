@@ -35,7 +35,7 @@ name: MT3000 LiveOS Base (public build farm)
 #   cost us the whole 3h07m build. See firmware/RUST_LAYER_LAYOUT.md.
 
 # PUBLIC BUILD FARM: private MT3000 source is checked out read-only at runtime.
-on:
+"on":
   workflow_dispatch:
     inputs:
       source_ref:
@@ -112,6 +112,7 @@ jobs:
     outputs:
       layer_artifact: ${{ steps.keys.outputs.host_tools_layer_artifact }}
       evidence_artifact: ${{ steps.keys.outputs.host_tools_evidence_artifact }}
+      source_run: ${{ steps.reuse-host.outputs.run_id || github.run_id }}
     steps:
       - name: Free disk space
         run: |
@@ -160,6 +161,7 @@ jobs:
         run: |
           set -u
           echo "hit=false" >> "$GITHUB_OUTPUT"
+          echo "run_id=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
           RUN_ID="$(gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.id != ${{ github.run_id }})] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')" || true
           [ -n "$RUN_ID" ] || { echo "HOST_TOOLS_CROSS_RUN=MISS"; exit 0; }
           rm -rf incoming-reuse-host
@@ -182,6 +184,7 @@ jobs:
           cp "$TAR" host-tools.tar.zst
           cp "$MAN" host-tools-manifest.json
           echo "hit=true" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "HOST_TOOLS_CROSS_RUN=HIT run=$RUN_ID artifact=$ARTIFACT_NAME"
       - name: Cache downloads (speed only - correctness never depends on this)
         if: steps.reuse-host.outputs.hit != 'true'
@@ -324,7 +327,7 @@ jobs:
             omr-work/omr/gl-mt3000/6.12/source/.config
           if-no-files-found: ignore
       - name: Upload host tools layer
-        if: success()
+        if: success() && steps.reuse-host.outputs.hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.keys.outputs.host_tools_layer_artifact }}
@@ -345,6 +348,7 @@ jobs:
       layer_artifact: ${{ steps.keys.outputs.rust_layer_artifact }}
       evidence_artifact: ${{ steps.keys.outputs.rust_evidence_artifact }}
       decision: ${{ steps.pack.outputs.decision }}
+      source_run: ${{ steps.reuse-rust.outputs.run_id || github.run_id }}
     steps:
       - name: Free disk space
         run: |
@@ -393,6 +397,7 @@ jobs:
         run: |
           set -u
           echo "hit=false" >> "$GITHUB_OUTPUT"
+          echo "run_id=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
           RUN_ID="$(gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.id != ${{ github.run_id }})] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')" || true
           [ -n "$RUN_ID" ] || { echo "RUST_CROSS_RUN=MISS"; exit 0; }
           rm -rf incoming-reuse-rust
@@ -415,6 +420,7 @@ jobs:
           cp "$TAR" rust-layer.tar.zst
           cp "$MAN" rust-layer-manifest.json
           echo "hit=true" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "RUST_CROSS_RUN=HIT run=$RUN_ID artifact=$ARTIFACT_NAME"
       - name: Cache downloads (speed only - correctness never depends on this)
         if: steps.reuse-rust.outputs.hit != 'true'
@@ -605,7 +611,7 @@ jobs:
             omr-work/omr/gl-mt3000/6.12/source/.config
           if-no-files-found: ignore
       - name: Upload rust layer
-        if: success()
+        if: success() && steps.reuse-rust.outputs.hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.keys.outputs.rust_layer_artifact }}
@@ -660,18 +666,20 @@ jobs:
           python3 firmware/tools/layer_key.py emit \
             --runner "$RUNNER_LABEL" --out layer-keys.json --github-output "$GITHUB_OUTPUT"
       - name: Fetch the host tools layer artifact
-        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.host-tools.outputs.layer_artifact }}
           path: incoming-host-tools
+          run-id: ${{ needs.host-tools.outputs.source_run }}
+          github-token: ${{ github.token }}
       - name: Fetch the rust layer artifact
         id: layer
-        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.rust-layer.outputs.layer_artifact }}
           path: incoming-rust
+          run-id: ${{ needs.rust-layer.outputs.source_run }}
+          github-token: ${{ github.token }}
       - name: Cache downloads (speed only - correctness never depends on this)
         uses: actions/cache@v4
         with:
