@@ -184,17 +184,10 @@ jobs:
 
       # 校验/解压阶段一律以**文件魔数**为准（detect_source_kind.py），
       # 这样即便上面的 KIND 推导有偏差也不会用错工具。
-      # 源码获取：压缩包缓存 + sha256 门禁 + 解压目录缓存
+      # 源码获取：每次只读获取 + sha256 门禁；私有源码包绝不进入 Public Actions cache
       # ------------------------------------------------------------------ #
-      - name: 恢复源码压缩包缓存
-        id: cache-archive
-        uses: actions/cache@v4
-        with:
-          path: downloads
-          key: "note9-ksrc-archive-${{ inputs.source_sha256 }}"
 
       - name: 获取源码包（release-asset 优先；否则直链）
-        if: steps.cache-archive.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
         run: |
