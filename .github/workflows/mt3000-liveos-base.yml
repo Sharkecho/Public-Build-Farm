@@ -785,7 +785,7 @@ jobs:
           name: ${{ steps.name.outputs.name }}
           path: dist/
           if-no-files-found: error
-      - name: Verify the candidate bundle (self-consistency gate)
+      - name: Verify the candidate bundle
         run: |
           # The manifests travel with the image. Verify the relationships BETWEEN them before
           # anyone flashes anything: checksums vs files, source refs vs the lock, SBOM package
