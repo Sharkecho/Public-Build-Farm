@@ -744,6 +744,41 @@ jobs:
             echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work probe_rc=$HRC"
             tail -n 20 host-tools-probe.log
           else
+      # OMR's build.sh selects the HOST LLVM toolchain for the BPF schedulers
+      # (`CONFIG_BPF_TOOLCHAIN_HOST=y`), and its `common/include/bpf_mptcp.mk` then takes the
+      # DIRECTORY of `clang` and expects `opt`, `llc`, `llvm-dis` and `llvm-strip` to sit in it:
+      #     LLVM_PATH:=$(dir $(CLANG));  LLVM_OPT:=$(LLVM_PATH)/opt
+      # A GitHub runner ships `clang` without those siblings, so `mptcp-bpf-bkup` died with
+      #     bash: line 1: /usr/bin//opt: No such file or directory   (make Error 127)
+      # and the whole image build stopped after 2h40m. Make the host toolchain complete by
+      # pointing the unsuffixed names at the same LLVM installation clang came from - and fail
+      # loudly if that installation is incomplete, so a runner image change is visible here
+      # instead of 2.7 hours into the image build.
+      - name: Complete the host LLVM toolchain (BPF schedulers)
+        run: |
+          set -eux
+          LLVM_BIN=""
+          for cand in "$(command -v clang)" /usr/bin/clang-14 /usr/lib/llvm-14/bin/clang; do
+            [ -n "$cand" ] || continue
+            dir=$(dirname "$(readlink -f "$cand")")
+            if [ -x "$dir/opt" ] && [ -x "$dir/llc" ] && [ -x "$dir/llvm-dis" ] \
+               && [ -x "$dir/llvm-strip" ]; then
+              LLVM_BIN="$dir"; break
+            fi
+          done
+          if [ -z "$LLVM_BIN" ]; then
+            echo "no complete LLVM found (need clang + opt/llc/llvm-dis/llvm-strip together)" >&2
+            ls -l /usr/bin/clang* 2>/dev/null || true
+            ls /usr/lib/llvm-*/bin 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          echo "LLVM_BIN=$LLVM_BIN"
+          for tool in opt llc llvm-dis llvm-strip; do
+            sudo ln -sf "$LLVM_BIN/$tool" "/usr/bin/$tool"
+          done
+          sudo ln -sf "$LLVM_BIN/clang" /usr/bin/clang
+          command -v clang; clang --version | head -1
+          /usr/bin/opt --version | head -1
             echo "HOST_TOOLS_LAYER=REUSE_VERIFIED probe_rc=$HRC"
           fi
       - name: Build image
