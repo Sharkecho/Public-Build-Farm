@@ -1035,6 +1035,22 @@ jobs:
           name: ${{ steps.name.outputs.name }}
           path: dist/
           if-no-files-found: error
+      # O53: the first image this pipeline ever built (70,277,478 bytes, run 36162560711) was
+      # rejected by a size ceiling of our own that had been guessed (64 MiB, 3 MiB too tight) -
+      # and because that check lives inside the collection step, BEFORE the upload, 2.6 hours of
+      # building disappeared with the runner and only a 2.2 MB log artifact survived. A gate
+      # failure must never discard the artifact again. The `-UNVERIFIED` suffix is deliberate:
+      # this copy did NOT pass the gate, so nothing downstream may treat it as a candidate.
+      - name: Upload the built image even when the gate fails (UNVERIFIED)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MT3000-LiveOS-V3-Base-UNVERIFIED-run${{ github.run_id }}
+          path: |
+            dist/
+            omr-work/omr/gl-mt3000/6.12/source/build.log
+          if-no-files-found: warn
+          retention-days: 14
       - name: Verify the candidate bundle (self-consistency gate)
         run: |
           # The manifests travel with the image. Verify the relationships BETWEEN them before
