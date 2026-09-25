@@ -9,10 +9,10 @@ Product/source repositories remain PRIVATE.
 
 | Private source | Public build target | Runner |
 | --- | --- | --- |
-| `Sharkecho/MT3000` | LiveOS/OpenWrt base, control package, edge package | `ubuntu-22.04` / `ubuntu-latest` |
+| `Sharkecho/MT3000` | LiveOS/OpenWrt base firmware | `ubuntu-22.04` | deployed · awaiting first real run |
 | `Sharkecho/note9-liveos` | Samsung Note9 kernel | `ubuntu-22.04` |
-| `Sharkecho/ai-translator` | Flutter/Android APK validation build | `ubuntu-latest` |
-| `Sharkecho/CentoreOS` | Tauri/Rust Windows desktop build | `windows-latest` |
+| `Sharkecho/ai-translator` | Flutter/Android APK validation build | `ubuntu-latest` | deployed · awaiting first real run |
+| `Sharkecho/CentoreOS` | Tauri/Rust Windows desktop build | `windows-latest` | deployed · awaiting first real run |
 
 ## Security boundary
 
@@ -33,8 +33,8 @@ Recommended `BUILD_FARM_SOURCE_TOKEN`:
 
 - Repository access: only `MT3000`, `note9-liveos`, `ai-translator`, `CentoreOS`.
 - **Contents: Read-only**.
-- **Actions: Read-only** is additionally needed for Note9 UAC2 when it reads a prior baseline run.
 - No write permissions.
+- Note9 baseline→UAC2 artifact reads use this PUBLIC repository's built-in `GITHUB_TOKEN`, not the private-source token.
 
 ## Global policy
 
