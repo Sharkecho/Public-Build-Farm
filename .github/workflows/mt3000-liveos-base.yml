@@ -50,6 +50,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 # BUILD_FARM_SOURCE_TOKEN must be read-only. Never persist it in the checkout.
 
@@ -150,15 +151,50 @@ jobs:
         run: |
           python3 firmware/tools/layer_key.py emit \
             --runner "$RUNNER_LABEL" --out layer-keys.json --github-output "$GITHUB_OUTPUT"
+      - name: Reuse host-tools layer from a prior run
+        id: reuse-host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.keys.outputs.host_tools_layer_artifact }}
+        shell: bash
+        run: |
+          set -u
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          RUN_ID="$(gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.id != ${{ github.run_id }})] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')" || true
+          [ -n "$RUN_ID" ] || { echo "HOST_TOOLS_CROSS_RUN=MISS"; exit 0; }
+          rm -rf incoming-reuse-host
+          if ! gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT_NAME" -D incoming-reuse-host; then
+            echo "HOST_TOOLS_CROSS_RUN=MISS reason=download-failed run=$RUN_ID"; rm -rf incoming-reuse-host; exit 0
+          fi
+          MAN=incoming-reuse-host/host-tools-manifest.json
+          TAR=incoming-reuse-host/host-tools.tar.zst
+          if [ ! -f "$MAN" ] || [ ! -f "$TAR" ]; then
+            echo "HOST_TOOLS_CROSS_RUN=MISS reason=incomplete-artifact run=$RUN_ID"; rm -rf incoming-reuse-host; exit 0
+          fi
+          if ! python3 firmware/tools/layer_key.py verify --layer host_tools --runner "$RUNNER_LABEL" --manifest "$MAN" > reuse-host-verify.txt 2>&1 || ! grep -q 'HOST_TOOLS_LAYER=REUSE' reuse-host-verify.txt; then
+            echo "HOST_TOOLS_CROSS_RUN=MISS reason=identity-mismatch run=$RUN_ID"; cat reuse-host-verify.txt || true; rm -rf incoming-reuse-host; exit 0
+          fi
+          WANT="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tarball']['sha256'])" "$MAN")"
+          GOT="$(sha256sum "$TAR" | cut -d' ' -f1)"
+          if [ "$WANT" != "$GOT" ]; then
+            echo "HOST_TOOLS_CROSS_RUN=MISS reason=sha256-mismatch run=$RUN_ID"; rm -rf incoming-reuse-host; exit 0
+          fi
+          cp "$TAR" host-tools.tar.zst
+          cp "$MAN" host-tools-manifest.json
+          echo "hit=true" >> "$GITHUB_OUTPUT"
+          echo "HOST_TOOLS_CROSS_RUN=HIT run=$RUN_ID artifact=$ARTIFACT_NAME"
       - name: Cache downloads (speed only - correctness never depends on this)
+        if: steps.reuse-host.outputs.hit != 'true'
         uses: actions/cache@v4
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
+        if: steps.reuse-host.outputs.hit != 'true'
         run: bash firmware/tools/prepare_sources.sh
       - name: Build prep (OMR build.sh, ONLY_PREPARE)
+        if: steps.reuse-host.outputs.hit != 'true'
         env:
           OMR_FEED: feeds/openmptcprouter
           OMR_LOG: "yes"
@@ -173,6 +209,7 @@ jobs:
           echo "OMR_RELEASE=$OMR_RELEASE"
           ONLY_PREPARE=yes ./build.sh
       - name: Inject Base layer (fragment + files + identity)
+        if: steps.reuse-host.outputs.hit != 'true'
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -208,6 +245,7 @@ jobs:
           shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
           PYEOF
       - name: defconfig + config gate
+        if: steps.reuse-host.outputs.hit != 'true'
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -219,6 +257,7 @@ jobs:
           grep -n 'VERSION_NUMBER\|ARM64_MODULE_PLTS\|TCP_CONG_BBR2' "$SRC/.config" || echo "NO REQUIRED SYMBOLS POST-DEFCONFIG"
           sh firmware/tools/check_config.sh "$SRC/.config"
       - name: Build host tools + cross toolchain (prerequisites of the single-package rust target)
+        if: steps.reuse-host.outputs.hit != 'true'
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -252,6 +291,7 @@ jobs:
             || { echo "MISSING cross gcc after toolchain/install"; ls -l "$SRC"/staging_dir/ ; exit 1; }
           echo "== disk after prerequisites =="; df -h /
       - name: Pack the host tools layer + write its manifest
+        if: steps.reuse-host.outputs.hit != 'true'
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -344,15 +384,50 @@ jobs:
         run: |
           python3 firmware/tools/layer_key.py emit \
             --runner "$RUNNER_LABEL" --out layer-keys.json --github-output "$GITHUB_OUTPUT"
+      - name: Reuse rust layer from a prior run
+        id: reuse-rust
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.keys.outputs.rust_layer_artifact }}
+        shell: bash
+        run: |
+          set -u
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          RUN_ID="$(gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.id != ${{ github.run_id }})] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')" || true
+          [ -n "$RUN_ID" ] || { echo "RUST_CROSS_RUN=MISS"; exit 0; }
+          rm -rf incoming-reuse-rust
+          if ! gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT_NAME" -D incoming-reuse-rust; then
+            echo "RUST_CROSS_RUN=MISS reason=download-failed run=$RUN_ID"; rm -rf incoming-reuse-rust; exit 0
+          fi
+          MAN=incoming-reuse-rust/rust-layer-manifest.json
+          TAR=incoming-reuse-rust/rust-layer.tar.zst
+          if [ ! -f "$MAN" ] || [ ! -f "$TAR" ]; then
+            echo "RUST_CROSS_RUN=MISS reason=incomplete-artifact run=$RUN_ID"; rm -rf incoming-reuse-rust; exit 0
+          fi
+          if ! python3 firmware/tools/layer_key.py verify --layer rust_toolchain --runner "$RUNNER_LABEL" --manifest "$MAN" > reuse-rust-verify.txt 2>&1 || ! grep -q 'RUST_LAYER=REUSE' reuse-rust-verify.txt; then
+            echo "RUST_CROSS_RUN=MISS reason=identity-mismatch run=$RUN_ID"; cat reuse-rust-verify.txt || true; rm -rf incoming-reuse-rust; exit 0
+          fi
+          WANT="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['tarball']['sha256'])" "$MAN")"
+          GOT="$(sha256sum "$TAR" | cut -d' ' -f1)"
+          if [ "$WANT" != "$GOT" ]; then
+            echo "RUST_CROSS_RUN=MISS reason=sha256-mismatch run=$RUN_ID"; rm -rf incoming-reuse-rust; exit 0
+          fi
+          cp "$TAR" rust-layer.tar.zst
+          cp "$MAN" rust-layer-manifest.json
+          echo "hit=true" >> "$GITHUB_OUTPUT"
+          echo "RUST_CROSS_RUN=HIT run=$RUN_ID artifact=$ARTIFACT_NAME"
       - name: Cache downloads (speed only - correctness never depends on this)
+        if: steps.reuse-rust.outputs.hit != 'true'
         uses: actions/cache@v4
         with:
           path: |
             omr-work/omr/gl-mt3000/6.12/source/dl
           key: omr-dl-${{ steps.keys.outputs.download_cache_key }}
       - name: Prepare pinned sources
+        if: steps.reuse-rust.outputs.hit != 'true'
         run: bash firmware/tools/prepare_sources.sh
       - name: Build prep (OMR build.sh, ONLY_PREPARE)
+        if: steps.reuse-rust.outputs.hit != 'true'
         env:
           OMR_FEED: feeds/openmptcprouter
           OMR_LOG: "yes"
@@ -363,6 +438,7 @@ jobs:
           echo "OMR_RELEASE=$OMR_RELEASE"
           ONLY_PREPARE=yes ./build.sh
       - name: Inject Base layer (fragment + files + identity)
+        if: steps.reuse-rust.outputs.hit != 'true'
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -391,6 +467,7 @@ jobs:
           shutil.copy(p, pathlib.Path(sys.argv[1]) / "files/etc/liveos/base-version.json")
           PYEOF
       - name: defconfig + config gate
+        if: steps.reuse-rust.outputs.hit != 'true'
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -402,6 +479,7 @@ jobs:
           grep -n 'VERSION_NUMBER\|ARM64_MODULE_PLTS\|TCP_CONG_BBR2' "$SRC/.config" || echo "NO REQUIRED SYMBOLS POST-DEFCONFIG"
           sh firmware/tools/check_config.sh "$SRC/.config"
       - name: Fetch the host tools layer artifact
+        if: steps.reuse-rust.outputs.hit != 'true'
         id: layer-a
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -409,6 +487,7 @@ jobs:
           name: ${{ needs.host-tools.outputs.layer_artifact }}
           path: incoming-host-tools
       - name: Restore the host tools layer (hard gate)
+        if: steps.reuse-rust.outputs.hit != 'true'
         run: |
           set -eux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -461,6 +540,7 @@ jobs:
           fi
           df -h /
       - name: Build the rust host toolchain (the expensive step)
+        if: steps.reuse-rust.outputs.hit != 'true'
         run: |
           set -ux
           SRC=omr-work/omr/gl-mt3000/6.12/source
@@ -479,6 +559,7 @@ jobs:
           tail -n 20 rust-build.log
           echo "== disk after rust =="; df -h /
       - name: Pack the rust layer + write its manifests
+        if: steps.reuse-rust.outputs.hit != 'true'
         id: pack
         run: |
           set -eux
@@ -744,16 +825,8 @@ jobs:
             echo "HOST_TOOLS_LAYER=PARTIAL_REBUILD note=the dry run still schedules host tool work probe_rc=$HRC"
             tail -n 20 host-tools-probe.log
           else
-      # OMR's build.sh selects the HOST LLVM toolchain for the BPF schedulers
-      # (`CONFIG_BPF_TOOLCHAIN_HOST=y`), and its `common/include/bpf_mptcp.mk` then takes the
-      # DIRECTORY of `clang` and expects `opt`, `llc`, `llvm-dis` and `llvm-strip` to sit in it:
-      #     LLVM_PATH:=$(dir $(CLANG));  LLVM_OPT:=$(LLVM_PATH)/opt
-      # A GitHub runner ships `clang` without those siblings, so `mptcp-bpf-bkup` died with
-      #     bash: line 1: /usr/bin//opt: No such file or directory   (make Error 127)
-      # and the whole image build stopped after 2h40m. Make the host toolchain complete by
-      # pointing the unsuffixed names at the same LLVM installation clang came from - and fail
-      # loudly if that installation is incomplete, so a runner image change is visible here
-      # instead of 2.7 hours into the image build.
+            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED probe_rc=$HRC"
+          fi
       - name: Complete the host LLVM toolchain (BPF schedulers)
         run: |
           set -eux
@@ -779,8 +852,6 @@ jobs:
           sudo ln -sf "$LLVM_BIN/clang" /usr/bin/clang
           command -v clang; clang --version | head -1
           /usr/bin/opt --version | head -1
-            echo "HOST_TOOLS_LAYER=REUSE_VERIFIED probe_rc=$HRC"
-          fi
       - name: Build image
         run: |
           SRC=omr-work/omr/gl-mt3000/6.12/source
