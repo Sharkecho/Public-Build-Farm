@@ -211,17 +211,61 @@ jobs:
           fi
           echo "CAPACITY=OK"
 
-      - name: runner build prerequisites (python shim + core build tools)
-        timeout-minutes: 10
+      - name: runner build prerequisites (Samsung-era python 2 + core build tools)
+        timeout-minutes: 15
         run: |
           set -uo pipefail
-          # The Samsung archive ships its toolchain behind a python wrapper whose shebang is
-          # "#!/usr/bin/python" (python2-era spelling). ubuntu-22.04 has no /usr/bin/python, so
-          # provide a python3 shim; the recipe also falls back to real-* binaries if this fails.
-          if [ ! -e /usr/bin/python ] && [ -x /usr/bin/python3 ]; then
-            sudo ln -sf /usr/bin/python3 /usr/bin/python || true
+          # The vendor environment this archive was built in had /usr/bin/python == Python 2.7, and
+          # two things on the build path need exactly that:
+          #   1. the shipped toolchain wrapper
+          #      (toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc)
+          #      carries the python2-era shebang "#!/usr/bin/python";
+          #   2. scripts/rkp_cfp/instrument.py - invoked from scripts/link-vmlinux.sh:373 while
+          #      vmlinux is linked, because CONFIG_RKP_CFP_JOPP=y - is Python 2 source: it uses the
+          #      Python 2 print statement (L1270) and imports the Python 2 only module "pipes".
+          # ubuntu-22.04 ships no /usr/bin/python, and a python3 shim makes (2) die with
+          # "SyntaxError: Missing parentheses in call to 'print'" after the whole kernel has been
+          # compiled (run 36970048474). So install the interpreter the vendor used.
+          # This is a build environment fix: not one byte of the Samsung source, defconfig,
+          # patch or toolchain changes.
+          PY2_BIN="$(command -v python2.7 || command -v python2 || true)"
+          if [ -z "${PY2_BIN}" ]; then
+            sudo apt-get update -qq >/dev/null 2>&1 || true
+            sudo apt-get install -y --no-install-recommends python2.7 >/dev/null 2>&1 \
+              || sudo apt-get install -y --no-install-recommends python2 >/dev/null 2>&1 || true
+            PY2_BIN="$(command -v python2.7 || command -v python2 || true)"
           fi
-          echo "PYTHON_SHIM=$([ -e /usr/bin/python ] && echo present || echo absent)"
+          if [ -z "${PY2_BIN}" ]; then
+            echo "PYTHON2_AVAILABLE=NO"
+            echo "PREREQUISITES=FAIL (the Samsung vmlinux post-link step is Python 2 and no Python 2 interpreter could be installed)"
+            exit 1
+          fi
+          sudo ln -sf "${PY2_BIN}" /usr/bin/python || true
+          PYTHON_VERSION="$(python --version 2>&1 || true)"
+          PYTHON_MAJOR="$(python -c 'import sys; print(sys.version_info[0])' 2>/dev/null || echo unknown)"
+          PYTHON3_VERSION="$(python3 --version 2>&1 || true)"
+          echo "PYTHON2_BIN=${PY2_BIN}"
+          echo "PYTHON_BIN=/usr/bin/python"
+          echo "PYTHON_VERSION=${PYTHON_VERSION}"
+          echo "PYTHON_MAJOR=${PYTHON_MAJOR}"
+          echo "PYTHON3_VERSION=${PYTHON3_VERSION}"
+          if [ "${PYTHON_MAJOR}" != "2" ]; then
+            echo "PYTHON_IS_PY2=NO"
+            echo "PREREQUISITES=FAIL (python on PATH is not Python 2; the Samsung vmlinux post-link step would fail)"
+            exit 1
+          fi
+          echo "PYTHON_IS_PY2=YES"
+          mkdir -p "${RESULTS}"
+          {
+            echo "PYTHON_BIN=/usr/bin/python"
+            echo "PYTHON2_BIN=${PY2_BIN}"
+            echo "PYTHON_VERSION=${PYTHON_VERSION}"
+            echo "PYTHON_MAJOR=${PYTHON_MAJOR}"
+            echo "PYTHON_IS_PY2=YES"
+            echo "PYTHON3_VERSION=${PYTHON3_VERSION}"
+            echo "PYTHON_ROLE=python=Python2 (vendor toolchain wrapper + Samsung scripts/rkp_cfp/instrument.py); python3=Python3 (the Samsung scripts/crypto|fmp post-link helpers declare py3)"
+          } > "${RESULTS}/python-env.txt"
+          cat "${RESULTS}/python-env.txt"
           HOST_DEPS=""
           for tool in bc bison flex make gcc ld sed awk; do
             if ! command -v "${tool}" >/dev/null 2>&1; then HOST_DEPS="${HOST_DEPS} ${tool}"; fi
@@ -451,6 +495,13 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p "${RESULTS}/stock"
+          # Build environment gate (defence in depth): scripts/link-vmlinux.sh runs the Samsung
+          # Python 2 post-link instrumentation between the final link and the Image. Fail here by
+          # name rather than minutes later with an opaque SyntaxError from inside that script.
+          BUILD_PYTHON_MAJOR="$(python -c 'import sys; print(sys.version_info[0])' 2>/dev/null || echo unknown)"
+          echo "BUILD_PYTHON_MAJOR=${BUILD_PYTHON_MAJOR}"
+          [ "${BUILD_PYTHON_MAJOR}" = "2" ] \
+            || { echo "STOCK_BUILD=FAIL (python on PATH is not Python 2; the Samsung vmlinux post-link step would fail)"; exit 1; }
           RECIPE="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/kernel/scripts/build_kernel.sh"
           bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${STOCK_SRC}" --out "${GITHUB_WORKSPACE}/${STOCK_OUT}" \
             --build-mode "${BUILD_MODE_SAMSUNG}" \
@@ -458,6 +509,14 @@ jobs:
             --expect-defconfig-sha256 "${DEFCONFIG_SHA256_BEFORE_FIXED}" \
             --expect-uac2-config not_set \
             2>&1 | tee "${RESULTS}/stock/recipe.txt"
+          # Stage what the recipe wrote into its own evidence directory BEFORE any gate below can
+          # exit: on a failed build this is exactly the material that names the blocker (in run
+          # 36970048474 these copies sat after the BUILD_RECIPE=OK gate, so the published artifact
+          # held recipe.txt only - no .config, no failure extract, no build tail).
+          for ev in failure-summary.txt build-tail.txt .config SHA256SUMS config-evidence.sha256; do
+            [ -f "${STOCK_OUT}/${ev}" ] && cp -f "${STOCK_OUT}/${ev}" "${RESULTS}/stock/${ev}" || true
+          done
+          echo "STAGED_FROM_STOCK_OUT=$(ls -1 "${RESULTS}/stock" | tr '\n' ' ')"
           grep -q '^BUILD_RECIPE=OK$' "${RESULTS}/stock/recipe.txt" \
             || { echo "STOCK_BUILD=FAIL (recipe did not report OK)"; exit 1; }
           # The stock phase must have run in the vendor's own mode - an O= build is a
@@ -565,6 +624,11 @@ jobs:
         if: ${{ inputs.build_mode != 'stock' }}
         run: |
           set -uo pipefail
+          mkdir -p "${RESULTS}/uac2"
+          BUILD_PYTHON_MAJOR="$(python -c 'import sys; print(sys.version_info[0])' 2>/dev/null || echo unknown)"
+          echo "BUILD_PYTHON_MAJOR=${BUILD_PYTHON_MAJOR}"
+          [ "${BUILD_PYTHON_MAJOR}" = "2" ] \
+            || { echo "UAC2_BUILD=FAIL (python on PATH is not Python 2; the Samsung vmlinux post-link step would fail)"; exit 1; }
           RECIPE="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/kernel/scripts/build_kernel.sh"
           bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${UAC2_SRC}" --out "${GITHUB_WORKSPACE}/${UAC2_OUT}" \
             --build-mode "${BUILD_MODE_SAMSUNG}" \
@@ -572,6 +636,10 @@ jobs:
             --expect-defconfig-sha256 "${DEFCONFIG_SHA256_AFTER_FIXED}" \
             --expect-uac2-config y \
             2>&1 | tee "${RESULTS}/uac2/recipe.txt"
+          for ev in failure-summary.txt build-tail.txt .config SHA256SUMS config-evidence.sha256; do
+            [ -f "${UAC2_OUT}/${ev}" ] && cp -f "${UAC2_OUT}/${ev}" "${RESULTS}/uac2/${ev}" || true
+          done
+          echo "STAGED_FROM_UAC2_OUT=$(ls -1 "${RESULTS}/uac2" | tr '\n' ' ')"
           grep -q '^BUILD_RECIPE=OK$' "${RESULTS}/uac2/recipe.txt" \
             || { echo "UAC2_BUILD=FAIL (recipe did not report OK)"; exit 1; }
           grep -E '^(BUILD_MODE|IN_TREE_BUILD|OFFICIAL_USES_O|SAMSUNG_OFFICIAL_BUILD_MODE|SAMSUNG_EQUIVALENT_BUILD|BUILD_COMMAND_USES_O|KBUILD_OBJTREE|UH_BLOB_PRESENT|UH_BLOB_PATH|UH_BLOB_SIZE|UH_BLOB_SHA256)=' \
@@ -814,13 +882,25 @@ jobs:
           # A run that fails early must still leave usable evidence behind: the failure
           # summary, the tail of the build log, the resolved .config and the hashes are
           # what make a blocker diagnosable without re-running the build.
-          for f in SUMMARY.txt markers.txt run-metadata.txt source-identity.txt uac2-dependencies.txt; do
+          for f in SUMMARY.txt markers.txt run-metadata.txt source-identity.txt uac2-dependencies.txt python-env.txt; do
             [ -f "${RESULTS}/${f}" ] && cp -f "${RESULTS}/${f}" evidence/
+          done
+          # Backfill from the recipe's own evidence directory when a phase died before it copied
+          # these out (or when a step-level exit skipped the copy): a partially staged result must
+          # not cost the next run its diagnosis. Only these named text files are taken - never the
+          # Image the recipe also leaves in that directory.
+          for pair in "stock:${STOCK_OUT}" "uac2:${UAC2_OUT}"; do
+            d="${pair%%:*}"; out="${pair#*:}"
+            mkdir -p "${RESULTS}/${d}"
+            for name in failure-summary.txt build-tail.txt .config SHA256SUMS config-evidence.sha256; do
+              [ -f "${RESULTS}/${d}/${name}" ] && continue
+              [ -f "${out}/${name}" ] && cp -f "${out}/${name}" "${RESULTS}/${d}/${name}" || true
+            done
           done
           for d in stock uac2; do
             [ -d "${RESULTS}/${d}" ] || continue
             mkdir -p "evidence/${d}"
-            for name in build.log build-tail.txt failure-summary.txt recipe.txt build-semantics.txt config.diff SHA256SUMS .config; do
+            for name in build.log build-tail.txt failure-summary.txt recipe.txt build-semantics.txt config.diff SHA256SUMS .config config-evidence.sha256; do
               [ -f "${RESULTS}/${d}/${name}" ] && cp -f "${RESULTS}/${d}/${name}" "evidence/${d}/${name}"
             done
             # The built Image binaries are deliberately NOT uploaded: this is a PUBLIC
@@ -830,6 +910,12 @@ jobs:
           if find evidence -type f \( -name '*.tar.gz' -o -name '*.o' -o -name '*.S' -o -name '*.c' -o -name '*.h' -o -name '*.ko' -o -name '.git*' \) | grep -q .; then
             echo "EVIDENCE_ALLOWLIST=FAIL (a file class that must not leave the runner reached the evidence set)"
             find evidence -type f | head -n 20
+            exit 1
+          fi
+          # Kernel binaries never leave this public farm: only their size and sha256 travel.
+          if find evidence -type f \( -name 'Image' -o -name 'Image.*' -o -name 'zImage' -o -name 'vmlinux' -o -name 'vmlinux.*' -o -name '*.img' \) | grep -q .; then
+            echo "EVIDENCE_ALLOWLIST=FAIL (a kernel binary reached the evidence set)"
+            find evidence -type f | grep -E '(Image|zImage|vmlinux|\.img$)' | head -n 20
             exit 1
           fi
           if grep -rIl -E 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' evidence >/dev/null 2>&1; then
@@ -899,7 +985,14 @@ jobs:
               echo "STATIC_VERIFY=NOT_REACHED"
             fi
             # Even when the run dies in phase 2 or 5, the log must carry the real failure
-            # text and the build semantics that were actually used.
+            # text, the build semantics that were actually used, and the interpreter that was
+            # actually used (run 36970048474 died on a python interpreter mismatch).
+            if [ -f "${RESULTS}/python-env.txt" ]; then
+              echo "=== build interpreter ==="
+              cat "${RESULTS}/python-env.txt"
+            else
+              echo "PYTHON_IS_PY2=unknown (the prerequisites step did not record the interpreter)"
+            fi
             for d in stock uac2; do
               if [ -f "${RESULTS}/${d}/failure-summary.txt" ]; then
                 echo "=== ${d} failure summary ==="
