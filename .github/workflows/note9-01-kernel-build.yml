@@ -728,6 +728,7 @@ jobs:
             echo "flag scope     : target_cc_lines stock=${STOCK_TGT_LINES:-n/a} uac2=${UAC2_TGT_LINES:-n/a}; target -fcommon hits stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a}"
             echo "build mode     : ${STOCK_MODE:-n/a}  OFFICIAL_USES_O=NO  IN_TREE_BUILD stock=${STOCK_INTREE:-n/a} uac2=${UAC2_INTREE:-n/a}"
             echo "uh .incbin blob: init/uh.8g.elf sha256=${STOCK_UH_BLOB:-n/a} (static payload shipped in the archive)"
+            echo "image safety   : the built Image is not published from this public farm (only size + sha256 are); PRIVATE_IMAGE_PERSISTENCE=PENDING"
             echo "artefacts      : stock/Image stock/.config uac2/Image uac2/.config SHA256SUMS config.diff"
             echo "device writes  : 0 (this workflow cannot reach a device)"
           } > "${RESULTS}/build-report.txt"
@@ -838,6 +839,7 @@ jobs:
           echo "EVIDENCE_FILES=$(find evidence -type f | wc -l)"
           echo "EVIDENCE_BYTES=$(du -sb evidence | awk '{print $1}')"
           echo "EVIDENCE_ALLOWLIST=PASS (logs, failure extracts, configs, metadata and hashes only)"
+          echo "PRIVATE_IMAGE_PERSISTENCE=PENDING (a public farm has no verified private artifact channel, so the built Image stays on the runner and only its size + sha256 are published)"
           find evidence -type f | sort
 
       - name: "phase 8 · upload build evidence"
