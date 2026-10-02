@@ -1,0 +1,131 @@
+name: Note9-01 Private Source Access Probe (public build farm)
+
+# target: note9-01-private-source-access
+#   Purpose: prove ONLY that a public GitHub-hosted runner can read the PRIVATE source repo
+#   Sharkecho/note9-01 and its pinned release asset through BUILD_FARM_SOURCE_TOKEN.
+#
+#   Deliberately minimal:
+#     * manual only (workflow_dispatch) — no push / pull_request / schedule trigger;
+#     * permissions: contents: read — nothing else, no write scope anywhere;
+#     * NO kernel build, NO compile, NO toolchain install, NO device access (DEVICE_WRITES=0);
+#     * NO artifact upload — nothing private leaves the runner;
+#     * the token is only ever tested for presence / used by gh / actions; it is never printed.
+#
+#   Result markers: PRIVATE_SOURCE_ACCESS=OK|FAIL, RELEASE_ASSET_ACCESS=OK|FAIL,
+#                   ASSET_SHA256_MATCH=YES|NO, NO_BUILD_PERFORMED=YES
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "private repo Sharkecho/note9-01 的 branch/tag/SHA"
+        required: true
+        default: "main"
+        type: string
+      probe_asset_tag:
+        description: "要探测的 release tag"
+        required: true
+        default: "source-n960n-n960nksu3fvg4"
+        type: string
+      probe_asset_name:
+        description: "要探测的 release asset 名"
+        required: true
+        default: "Kernel.tar.gz"
+        type: string
+      probe_asset_sha256:
+        description: "该 asset 的钉死 sha256（比对用）"
+        required: true
+        default: "7CC2E3F5849F29E03C17F7D7931E793D0E59C0020A9ECD940AAF78E8F7563BF3"
+        type: string
+      probe_asset_size:
+        description: "该 asset 的钉死字节数（比对用）"
+        required: true
+        default: "202034479"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "note9-01-private-source-access-${{ inputs.source_ref }}"
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: "private source access probe"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: "token 存在性（只判断，绝不打值）"
+        run: |
+          set -euo pipefail
+          echo "TARGET=note9-01-private-source-access"
+          echo "REQUIRED_PERMISSION=Contents:Read-only on Sharkecho/note9-01"
+          if [ -z "${{ secrets.BUILD_FARM_SOURCE_TOKEN }}" ]; then
+            echo "PRIVATE_SOURCE_ACCESS=FAIL (secret BUILD_FARM_SOURCE_TOKEN is not set)"
+            exit 1
+          fi
+          echo "TOKEN_PRESENT=YES"
+
+      - name: "检出 PRIVATE 源码（运行时取用，read-only）"
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/note9-01
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: "私有源码访问结论"
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.checkout.outcome }}" != "success" ]; then
+            echo "PRIVATE_SOURCE_ACCESS=FAIL (checkout of Sharkecho/note9-01 was denied)"
+            echo "REQUIRED_PERMISSION=Contents:Read-only on Sharkecho/note9-01"
+            exit 1
+          fi
+          echo "PRIVATE_SOURCE_ACCESS=OK"
+          echo "PRIVATE_SOURCE_REPO=Sharkecho/note9-01"
+          echo "PRIVATE_SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "PRIVATE_SOURCE_COMMIT=$(git log -1 --format=%s)"
+
+      - name: "探测钉死的 release asset（元数据 + 下载 + sha256）"
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.probe_asset_tag }}"
+          NAME="${{ inputs.probe_asset_name }}"
+          EXPECTED_SHA="$(printf '%s' '${{ inputs.probe_asset_sha256 }}' | tr 'A-F' 'a-f')"
+          EXPECTED_SIZE="${{ inputs.probe_asset_size }}"
+
+          if ! gh api "repos/Sharkecho/note9-01/releases/tags/${TAG}" > release.json 2>/dev/null; then
+            echo "RELEASE_ASSET_ACCESS=FAIL (release api denied — token cannot read private releases)"
+            exit 1
+          fi
+          echo "RELEASE_ASSET_ACCESS=OK"
+          gh api "repos/Sharkecho/note9-01/releases/tags/${TAG}" \
+            --jq '.assets[] | "ASSET name=\(.name) size=\(.size) state=\(.state) digest=\(.digest)"'
+
+          ASSET_ID="$(gh api "repos/Sharkecho/note9-01/releases/tags/${TAG}" --jq ".assets[] | select(.name==\"${NAME}\") | .id")"
+          [ -n "${ASSET_ID}" ] || { echo "ASSET_PRESENT=FAIL (asset ${NAME} not found in ${TAG})"; exit 1; }
+          echo "ASSET_PRESENT=YES"
+
+          gh release download "${TAG}" --repo Sharkecho/note9-01 -p "${NAME}" -D probe-download --clobber \
+            || { echo "ASSET_DOWNLOAD=FAIL (private release asset not downloadable)"; exit 1; }
+          test -s "probe-download/${NAME}" || { echo "ASSET_DOWNLOAD=FAIL (empty file)"; exit 1; }
+          echo "ASSET_DOWNLOAD=OK"
+
+          ACTUAL_SHA="$(sha256sum "probe-download/${NAME}" | awk '{print $1}' | tr 'A-F' 'a-f')"
+          ACTUAL_SIZE="$(stat -c '%s' "probe-download/${NAME}")"
+          echo "ASSET_SHA256_ACTUAL=${ACTUAL_SHA}"
+          echo "ASSET_SIZE_ACTUAL=${ACTUAL_SIZE}"
+          [ "${ACTUAL_SIZE}" = "${EXPECTED_SIZE}" ] || { echo "ASSET_SIZE_MATCH=NO"; exit 1; }
+          echo "ASSET_SIZE_MATCH=YES"
+          [ "${ACTUAL_SHA}" = "${EXPECTED_SHA}" ] || { echo "ASSET_SHA256_MATCH=NO"; exit 1; }
+          echo "ASSET_SHA256_MATCH=YES"
+
+          echo "NO_BUILD_PERFORMED=YES"
+          echo "PRIVATE_SOURCE_ACCESS_GATE=PASS"
