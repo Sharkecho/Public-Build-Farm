@@ -316,7 +316,7 @@ jobs:
           {
             echo "PRIVATE_SOURCE_REPO=Sharkecho/note9-01"
             echo "PRIVATE_SOURCE_REF=${{ inputs.source_ref }}"
-            echo "PRIVATE_SOURCE_SHA=$(git -C "${SOURCE_REPO_DIR}" rev-parse HEAD)"
+            echo "PRIVATE_SOURCE_SHA_SHORT=$(git -C "${SOURCE_REPO_DIR}" rev-parse --short=7 HEAD)"
             echo "SOURCE_ASSET=${{ inputs.source_asset_name }}"
             echo "SOURCE_ASSET_TAG=${{ inputs.source_asset_tag }}"
             echo "SOURCE_SHA256=${{ needs.preflight.outputs.source_sha256 }}"
