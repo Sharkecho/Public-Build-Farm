@@ -222,20 +222,20 @@ jobs:
           persist-credentials: false
           path: source-repo
 
-      - name: private source identity (SHA only, never the commit title)
+      - name: private source identity (short SHA + content hashes only, never the commit title)
         run: |
           set -uo pipefail
-          PRIVATE_SOURCE_SHA="$(git -C "${SOURCE_REPO_DIR}" rev-parse HEAD)"
+          PRIVATE_SOURCE_SHA_SHORT="$(git -C "${SOURCE_REPO_DIR}" rev-parse --short=7 HEAD)"
           echo "PRIVATE_SOURCE_REPO=Sharkecho/note9-01"
           echo "PRIVATE_SOURCE_REF=${{ inputs.source_ref }}"
-          echo "PRIVATE_SOURCE_SHA=${PRIVATE_SOURCE_SHA}"
+          echo "PRIVATE_SOURCE_SHA_SHORT=${PRIVATE_SOURCE_SHA_SHORT}"
           RECIPE="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/kernel/scripts/build_kernel.sh"
           PATCH="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/kernel/patches/K1_UAC2_MINIMAL.patch"
           [ -f "${RECIPE}" ] || { echo "BUILD_RECIPE=ABSENT"; echo "SOURCE_IDENTITY=FAIL"; exit 1; }
           [ -f "${PATCH}" ] || { echo "SOURCE_DELTA_PATCH=ABSENT"; echo "SOURCE_IDENTITY=FAIL"; exit 1; }
-          echo "RECIPE_PATH=${RECIPE}"
+          echo "RECIPE_PATH=kernel/scripts/build_kernel.sh"
           echo "RECIPE_SHA256=$(sha256sum "${RECIPE}" | awk '{print $1}')"
-          echo "PATCH_PATH=${PATCH}"
+          echo "PATCH_PATH=kernel/patches/K1_UAC2_MINIMAL.patch"
           echo "PATCH_SHA256=$(sha256sum "${PATCH}" | awk '{print $1}')"
           echo "SOURCE_IDENTITY=OK"
 
