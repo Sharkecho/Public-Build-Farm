@@ -4,6 +4,10 @@ name: Note9-01 Kernel Build (public build farm)
 #   PRIVATE source : Sharkecho/note9-01   (source of truth, checked out at runtime)
 #   PUBLIC compute : 本仓库（GitHub-hosted runner, ubuntu-22.04）
 #   design doc     : https://github.com/Sharkecho/note9-01/blob/main/docs/GITHUB_CLOUD_BUILD.md
+#   source asset   : PRIVATE release `source-n960n-n960nksu3fvg4` → asset `Kernel.tar.gz`
+#                    size = 202034479 bytes, members = 66961
+#                    sha256 = 7CC2E3F5849F29E03C17F7D7931E793D0E59C0020A9ECD940AAF78E8F7563BF3
+#                    （Samsung OSRC ZIP 的成员，原样提取；哈希/体积/成员数在 gate 里硬固定）
 #
 # 铁律（AGENTS.md + GLOBAL_BUILD_COMPUTE_POLICY）：
 #   * 只有 workflow_dispatch —— 无 push / pull_request / schedule 触发；
@@ -16,8 +20,10 @@ name: Note9-01 Kernel Build (public build farm)
 #   * DEVICE_WRITES = 0 —— 本 workflow 不运行 adb、不接触手机、不刷机；
 #   * 旧 target note9-kernel.yml（note9-liveos）保持不变，作为人工回退。
 #
-# 当前状态：接口已接线、通过干跑校验；尚未启动任何 run。
-# 启动条件：owner 明确授权后手动 dispatch，且 BUILD_FARM_SOURCE_TOKEN 已覆盖 Sharkecho/note9-01。
+# 当前状态：源码资产已上传为 PRIVATE release asset 并端到端校验（下载回读哈希一致）；
+#           接口已接线、通过干跑校验；尚未启动任何 run。
+# 启动条件：owner 明确授权后手动 dispatch，且 BUILD_FARM_SOURCE_TOKEN 已覆盖 Sharkecho/note9-01
+#           （fine-grained, Contents: Read-only）。
 
 on:
   workflow_dispatch:
@@ -37,9 +43,9 @@ on:
         default: "main"
         type: string
       source_sha256:
-        description: "Samsung 源码包 sha256（必填；为空或校验失败即 fail）"
+        description: "Kernel.tar.gz 的 sha256（必填；必须等于 workflow 内固定的资产哈希，否则 SOURCE_INTEGRITY=FAIL）"
         required: true
-        default: "5A74817F8572A3096FDA2A1E3256595F5C1434084939A91B59E3E10F3002FB39"
+        default: "7CC2E3F5849F29E03C17F7D7931E793D0E59C0020A9ECD940AAF78E8F7563BF3"
         type: string
       device:
         description: "期望机型（身份断言，不符即 fail）"
@@ -61,15 +67,15 @@ on:
       source_asset_tag:
         description: "release-asset 模式：私有仓库的 Release tag"
         required: false
-        default: "n960n-source-N960NKSU3FVG4"
+        default: "source-n960n-n960nksu3fvg4"
         type: string
       source_asset_name:
-        description: "release-asset 模式：asset 文件名"
+        description: "release-asset 模式：asset 文件名（固定为 Kernel.tar.gz）"
         required: false
-        default: "SM-N960N_KOR_QQ_Opensource.zip"
+        default: "Kernel.tar.gz"
         type: string
       source_url:
-        description: "直链模式（可选；留空＝使用 release asset）"
+        description: "直链模式（可选；留空＝用 release asset；直链必须提供同一个 Kernel.tar.gz 本体）"
         required: false
         default: ""
         type: string
@@ -93,7 +99,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_ARCHIVE: "downloads/SM-N960N_KOR_QQ_Opensource.zip"
+  # 构建输入 = PRIVATE release asset `Kernel.tar.gz`（从 Samsung OSRC ZIP 原样提取的成员）。
+  # 下面三个常量是 acquisition gate 的硬锚点：输入哈希、下载后哈希、体积、成员数都必须与它们一致。
+  SOURCE_ARCHIVE: "downloads/Kernel.tar.gz"
+  KERNEL_SOURCE_ASSET: "Kernel.tar.gz"
+  KERNEL_SOURCE_SHA256_FIXED: "7CC2E3F5849F29E03C17F7D7931E793D0E59C0020A9ECD940AAF78E8F7563BF3"
+  KERNEL_SOURCE_SIZE_FIXED: "202034479"
+  KERNEL_SOURCE_MEMBERS_FIXED: "66961"
   SRC_ROOT: "kernel-src"
   STOCK_OUT: "build/stock"
   UAC2_OUT: "build/uac2"
@@ -134,7 +146,7 @@ jobs:
         run: |
           set -euo pipefail
           VALUE="$(printf '%s' '${{ inputs.source_sha256 }}' | tr 'A-F' 'a-f')"
-          printf '%s' "${VALUE}" | grep -Eq '^[0-9a-f]{64}$' || { echo "SOURCE_SHA256_INPUT=FAIL"; exit 1; }
+          printf '%s' "${VALUE}" | grep -Eq '^[0-9a-f]{64}$' || { echo "SOURCE_INTEGRITY=FAIL (malformed source_sha256 input)"; exit 1; }
           echo "value=${VALUE}" >> "$GITHUB_OUTPUT"
           echo "SOURCE_SHA256_INPUT=OK"
 
@@ -190,7 +202,7 @@ jobs:
           echo "PUBLIC_WORKFLOW_SHA=${{ github.sha }}"
           echo "BUILD_RUN_ID=${{ github.run_id }}"
 
-      - name: "获取 Samsung 官方源码包（asset 优先，然后 sha256 门禁）"
+      - name: "获取 PRIVATE Release 资产 Kernel.tar.gz（asset 优先，然后硬性 SHA256 门禁）"
         env:
           GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
         run: |
@@ -208,22 +220,35 @@ jobs:
           fi
           [ -s "${SOURCE_ARCHIVE}" ] || { echo "SOURCE_ACQUIRE=FAIL (empty archive)"; exit 1; }
           echo "SOURCE_ACQUIRE=OK"
-          EXPECTED="${{ needs.preflight.outputs.source_sha256 }}"
-          ACTUAL="$(sha256sum "${SOURCE_ARCHIVE}" | awk '{print $1}')"
-          echo "SOURCE_SHA256_EXPECTED=${EXPECTED}"
-          echo "SOURCE_SHA256_ACTUAL=${ACTUAL}"
-          [ "${EXPECTED}" = "${ACTUAL}" ] || { echo "SOURCE_SHA256=FAIL"; exit 1; }
-          echo "SOURCE_SHA256=OK"
-          echo "SOURCE_BYTES=$(stat -c '%s' "${SOURCE_ARCHIVE}")"
+          EXPECTED_INPUT="${{ needs.preflight.outputs.source_sha256 }}"
+          EXPECTED_FIXED="$(printf '%s' "${KERNEL_SOURCE_SHA256_FIXED}" | tr 'A-F' 'a-f')"
+          ACTUAL="$(sha256sum "${SOURCE_ARCHIVE}" | awk '{print $1}' | tr 'A-F' 'a-f')"
+          SIZE_ACTUAL="$(stat -c '%s' "${SOURCE_ARCHIVE}")"
+          echo "KERNEL_SOURCE_ASSET=${KERNEL_SOURCE_ASSET}"
+          echo "KERNEL_SOURCE_SHA256_EXPECTED=${EXPECTED_FIXED}"
+          echo "KERNEL_SOURCE_SHA256_ACTUAL=${ACTUAL}"
+          echo "KERNEL_SOURCE_SIZE_ACTUAL=${SIZE_ACTUAL}"
+          [ "${EXPECTED_INPUT}" = "${EXPECTED_FIXED}" ] \
+            || { echo "SOURCE_INTEGRITY=FAIL (input sha256 is not the pinned asset hash)"; exit 1; }
+          [ "${SIZE_ACTUAL}" = "${KERNEL_SOURCE_SIZE_FIXED}" ] \
+            || { echo "SOURCE_INTEGRITY=FAIL (downloaded asset size mismatch)"; exit 1; }
+          [ "${ACTUAL}" = "${EXPECTED_FIXED}" ] \
+            || { echo "SOURCE_INTEGRITY=FAIL (downloaded asset sha256 mismatch)"; exit 1; }
+          gzip -t "${SOURCE_ARCHIVE}" || { echo "SOURCE_INTEGRITY=FAIL (gzip CRC)"; exit 1; }
+          MEMBERS="$(tar -tzf "${SOURCE_ARCHIVE}" | wc -l)"
+          echo "KERNEL_SOURCE_MEMBERS=${MEMBERS}"
+          [ "${MEMBERS}" = "${KERNEL_SOURCE_MEMBERS_FIXED}" ] \
+            || { echo "SOURCE_INTEGRITY=FAIL (member count mismatch)"; exit 1; }
+          echo "SOURCE_INTEGRITY=OK"
 
-      - name: "Linux 原生解压（保留符号链接与大小写语义）"
+      - name: "解压到 runner 的 Linux 文件系统（tar.gz：符号链接与大小写语义天然正确）"
         run: |
           set -euo pipefail
           mkdir -p "${SRC_ROOT}"
-          tar -xf "${SOURCE_ARCHIVE}" -C "${SRC_ROOT}"
-          tar -xzf "${SRC_ROOT}/Kernel.tar.gz" -C "${SRC_ROOT}"
+          tar -xzf "${SOURCE_ARCHIVE}" -C "${SRC_ROOT}"
           echo "SOURCE_EXTRACT=OK"
           echo "SRC_FILES=$(find "${SRC_ROOT}" -type f | wc -l)"
+          echo "SRC_SYMLINKS=$(find "${SRC_ROOT}" -type l | wc -l)"
 
       - name: "源码 pristine 校验（不猜版本）"
         run: |
