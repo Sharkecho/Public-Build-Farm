@@ -382,6 +382,7 @@ jobs:
           bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${SRC_ROOT}" --out "${GITHUB_WORKSPACE}/${STOCK_OUT}" \
             --defconfig "${{ inputs.defconfig }}" \
             --expect-defconfig-sha256 "${DEFCONFIG_SHA256_BEFORE_FIXED}" \
+            --expect-uac2-config not_set \
             2>&1 | tee "${RESULTS}/stock/recipe.txt"
           grep -q '^BUILD_RECIPE=OK$' "${RESULTS}/stock/recipe.txt" \
             || { echo "STOCK_BUILD=FAIL (recipe did not report OK)"; exit 1; }
@@ -405,6 +406,9 @@ jobs:
           echo "STOCK_CONFIG_SHA256=${STOCK_CONFIG_SHA256}"
           echo "STOCK_BUILD_LOG_LINES=$(wc -l < "${RESULTS}/stock/build.log")"
           grep -E '^(GCC_VERSION|TOOLCHAIN_MODE|BUILD_SECONDS|BUILD_WARNINGS|BUILD_ERRORS|UAC2_SYMBOL_STATUS|MODULES_BUILT)=' "${RESULTS}/stock/recipe.txt" || true
+          for ev in flag-scope-target.txt flag-scope-target-fcommon.txt flag-scope-host.txt; do
+            [ -f "${STOCK_OUT}/${ev}" ] && cp "${STOCK_OUT}/${ev}" "${RESULTS}/stock/${ev}" || true
+          done
           echo "STOCK_BUILD=PASS"
           rm -rf "${STOCK_OUT}"
           df -h "$GITHUB_WORKSPACE" | tail -n 1
@@ -450,6 +454,7 @@ jobs:
           bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${SRC_ROOT}" --out "${GITHUB_WORKSPACE}/${UAC2_OUT}" \
             --defconfig "${{ inputs.defconfig }}" \
             --expect-defconfig-sha256 "${DEFCONFIG_SHA256_AFTER_FIXED}" \
+            --expect-uac2-config y \
             2>&1 | tee "${RESULTS}/uac2/recipe.txt"
           grep -q '^BUILD_RECIPE=OK$' "${RESULTS}/uac2/recipe.txt" \
             || { echo "UAC2_BUILD=FAIL (recipe did not report OK)"; exit 1; }
@@ -469,6 +474,9 @@ jobs:
           echo "UAC2_IMAGE_SHA256=$(sha256sum "${RESULTS}/uac2/Image" | awk '{print $1}')"
           echo "UAC2_CONFIG_SHA256=$(sha256sum "${RESULTS}/uac2/.config" | awk '{print $1}')"
           grep -E '^(GCC_VERSION|TOOLCHAIN_MODE|BUILD_SECONDS|BUILD_WARNINGS|BUILD_ERRORS|UAC2_SYMBOL_STATUS|MODULES_BUILT)=' "${RESULTS}/uac2/recipe.txt" || true
+          for ev in flag-scope-target.txt flag-scope-target-fcommon.txt flag-scope-host.txt; do
+            [ -f "${UAC2_OUT}/${ev}" ] && cp "${UAC2_OUT}/${ev}" "${RESULTS}/uac2/${ev}" || true
+          done
           echo "UAC2_BUILD=PASS"
           df -h "$GITHUB_WORKSPACE" | tail -n 1
 
@@ -512,6 +520,12 @@ jobs:
           STOCK_TGT_LINES="$(grep -E '^TARGET_CC_LINES=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
           UAC2_TGT_LINES="$(grep -E '^TARGET_CC_LINES=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
           STOCK_HOST_FLAGS="$(grep -E '^HOST_CC_VERSION=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2-)"
+          STOCK_TGT_WHOLE="$(grep -E '^TARGET_WHOLEFILE_FCOMMON_HITS=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_TGT_WHOLE="$(grep -E '^TARGET_WHOLEFILE_FCOMMON_HITS=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_CFG_FUAC2="$(grep -E '^BUILT_CONFIG_F_UAC2_STATE=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_CFG_FUAC2="$(grep -E '^BUILT_CONFIG_F_UAC2_STATE=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_CFG_VERIFIED="$(grep -E '^UAC2_CONFIG_VERIFIED=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_CFG_VERIFIED="$(grep -E '^UAC2_CONFIG_VERIFIED=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
 
           {
             echo "STOCK_CONFIG_SHA256=$(sha256sum "${STOCK_CONFIG}" | awk '{print $1}')"
@@ -524,6 +538,8 @@ jobs:
             echo "DTC_BUILD=stock:${STOCK_DTC:-n/a} uac2:${UAC2_DTC:-n/a}"
             echo "TARGET_FCOMMON_HITS=stock:${STOCK_TGT_HITS:-n/a} uac2:${UAC2_TGT_HITS:-n/a}"
             echo "TARGET_CC_LINES=stock:${STOCK_TGT_LINES:-n/a} uac2:${UAC2_TGT_LINES:-n/a}"
+            echo "TARGET_WHOLEFILE_FCOMMON_HITS=stock:${STOCK_TGT_WHOLE:-n/a} uac2:${UAC2_TGT_WHOLE:-n/a} (diagnostic only: whole transcript, includes reprinted host commands)"
+            echo "BUILT_CONFIG_F_UAC2=stock:${STOCK_CFG_FUAC2:-n/a} uac2:${UAC2_CFG_FUAC2:-n/a} (read from the generated .config, not from the patch input)"
           } > "${RESULTS}/stock-vs-uac2.txt"
 
           {
@@ -547,7 +563,9 @@ jobs:
             echo "host dtc         : stock=${STOCK_DTC:-n/a} uac2=${UAC2_DTC:-n/a}"
             echo "host-only proof  : stock=${STOCK_SCOPE:-n/a} uac2=${UAC2_SCOPE:-n/a}"
             echo "target cc lines  : stock=${STOCK_TGT_LINES:-n/a} uac2=${UAC2_TGT_LINES:-n/a} (target probe must be non-empty)"
-            echo "target -fcommon  : stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a} (must both be 0)"
+            echo "target -fcommon  : stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a} (intersection with target cc lines; must both be 0)"
+            echo "whole-file hits  : stock=${STOCK_TGT_WHOLE:-n/a} uac2=${UAC2_TGT_WHOLE:-n/a} (diagnostic; host commands reprinted by -B are expected here)"
+            echo "built .config    : stock CONFIG_USB_CONFIGFS_F_UAC2=${STOCK_CFG_FUAC2:-n/a} uac2=${UAC2_CFG_FUAC2:-n/a} (verified from .config, not from the patch)"
           } > "${RESULTS}/static-verification.txt"
           cat "${RESULTS}/static-verification.txt"
 
@@ -593,6 +611,14 @@ jobs:
             echo "STATIC_VERIFY=FAIL (flag-scope evidence inconclusive: target cc lines stock=${STOCK_TGT_LINES:-none} uac2=${UAC2_TGT_LINES:-none})"
             exit 1
           fi
+          if [ "${STOCK_CFG_VERIFIED:-FAIL}" != "PASS" ] || [ "${UAC2_CFG_VERIFIED:-FAIL}" != "PASS" ]; then
+            echo "STATIC_VERIFY=FAIL (built .config UAC2 state was not verified: stock=${STOCK_CFG_VERIFIED:-n/a} uac2=${UAC2_CFG_VERIFIED:-n/a})"
+            exit 1
+          fi
+          if [ "${STOCK_CFG_FUAC2:-x}" != "not_set" ] || [ "${UAC2_CFG_FUAC2:-x}" != "y" ]; then
+            echo "STATIC_VERIFY=FAIL (built .config UAC2 state is not the expected one: stock=${STOCK_CFG_FUAC2:-n/a} uac2=${UAC2_CFG_FUAC2:-n/a})"
+            exit 1
+          fi
           echo "HOST_FIX_SCOPE=HOST_ONLY"
           echo "HOSTCFLAGS_EFFECTIVE=${STOCK_HOSTCFLAGS:-n/a}"
           echo "TARGET_FCOMMON_HITS=0"
@@ -611,6 +637,9 @@ jobs:
             echo "DTC_BUILD=stock:${STOCK_DTC:-n/a} uac2:${UAC2_DTC:-n/a}"
             echo "TARGET_FCOMMON_HITS=0"
             echo "TARGET_CC_LINES=stock:${STOCK_TGT_LINES:-n/a} uac2:${UAC2_TGT_LINES:-n/a}"
+            echo "TARGET_WHOLEFILE_FCOMMON_HITS=stock:${STOCK_TGT_WHOLE:-n/a} uac2:${UAC2_TGT_WHOLE:-n/a}"
+            echo "BUILT_CONFIG_F_UAC2=stock:${STOCK_CFG_FUAC2:-n/a} uac2:${UAC2_CFG_FUAC2:-n/a}"
+            echo "UAC2_CONFIG_VERIFIED=PASS (read from the generated .config, not from the patch input)"
             echo "UAC2_SYMBOL_STATUS=${UAC2_SYM}"
             echo "STATIC_VERIFY=PASS"
           } > "${RESULTS}/markers.txt"
@@ -649,7 +678,7 @@ jobs:
               fi
             done
             if [ -f "${RESULTS}/markers.txt" ]; then
-              grep -E '^(UNEXPECTED_CONFIG_DRIFT|IMAGE_SIZE_DELTA|HOST_FIX_SCOPE|HOSTCFLAGS_EFFECTIVE|DTC_BUILD|TARGET_FCOMMON_HITS|TARGET_CC_LINES|STATIC_VERIFY)=' "${RESULTS}/markers.txt" || true
+              grep -E '^(UNEXPECTED_CONFIG_DRIFT|IMAGE_SIZE_DELTA|HOST_FIX_SCOPE|HOSTCFLAGS_EFFECTIVE|DTC_BUILD|TARGET_FCOMMON_HITS|TARGET_WHOLEFILE_FCOMMON_HITS|TARGET_CC_LINES|BUILT_CONFIG_F_UAC2|UAC2_CONFIG_VERIFIED|STATIC_VERIFY)=' "${RESULTS}/markers.txt" || true
             else
               echo "UNEXPECTED_CONFIG_DRIFT=unknown (static verification did not run)"
               echo "STATIC_VERIFY=NOT_REACHED"
