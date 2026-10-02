@@ -17,6 +17,26 @@ name: Note9-01 Kernel Build (public build farm)
 #   compare  - stock build, then the UAC2 delta build, then a full A/B compare
 #              (default; this is the K1 acceptance run)
 #
+# BUILD MODE = SAMSUNG'S OWN (revision 3, after run 36966826747)
+#   The vendor entry points build IN THE SOURCE TREE and never pass O=:
+#     build_kernel.sh:8,10        make ARCH=arm64 exynos9810-crownlteks_defconfig ; make ARCH=arm64 -j16
+#     AndroidKernel.mk:66,98      $(MAKE) -C $(TARGET_KERNEL_SOURCE) ARCH=$(KERNEL_ARCH) ...
+#     build.config.universal9810  FILES="arch/arm64/boot/Image:kernel ..."
+#   An O= build is NOT equivalent for this tree: init/_uh.S:40 embeds a static blob with
+#   `.incbin "init/uh.8g.elf"` (CONFIG_UH=y, CONFIG_UH_RKP_8G=y), and GAS resolves that
+#   quoted path against the ASSEMBLER'S CWD. With O= the assembler runs in the output
+#   tree, where no rule ever places that blob, so scripts/Makefile.build:434 (as_o_S)
+#   fails - exactly the run-3 blocker. In-tree the CWD is the tree root, where the blob
+#   ships inside the archive, so the official build works with ZERO source modification.
+#   Therefore each phase now extracts its OWN pristine copy of the same verified archive:
+#     stock phase -> kernel-src-stock -> in-tree build -> evidence -> tree deleted
+#     uac2  phase -> kernel-src-uac2  -> single config delta -> in-tree build -> evidence
+#   One tree at a time keeps peak disk use inside a standard ubuntu-22.04 runner, and the
+#   two phases stay isolated by construction (no shared, patched or reused tree).
+#
+# On failure the run still uploads EVIDENCE (build log, failure extract, .config,
+# metadata, hashes) - never a source tree, the archive, or a credential.
+#
 # The K1 round is a RESEARCH/BUILD round: this workflow compiles and verifies.
 # It cannot and does not touch a device.
 
@@ -97,11 +117,14 @@ env:
   KERNEL_SOURCE_MEMBERS_FIXED: "66961"
   DEFCONFIG_SHA256_BEFORE_FIXED: 417e43beb5c9dc6f574f3e42ce8d4550a2b625c199d3d4392c2be14433c7f7f2
   DEFCONFIG_SHA256_AFTER_FIXED: 06682be8cfa1befd65d14a6bc905c1c74b3e6a1c318404dd9c881674fe54f12a
-  SRC_ROOT: kernel-src
+  SRC_ROOT: kernel-src-stock
+  STOCK_SRC: kernel-src-stock
+  UAC2_SRC: kernel-src-uac2
   STOCK_OUT: build-stock
   UAC2_OUT: build-uac2
   RESULTS: results
   SOURCE_REPO_DIR: source-repo
+  BUILD_MODE_SAMSUNG: in-tree
   MIN_FREE_GB: "12"
 
 jobs:
@@ -288,31 +311,62 @@ jobs:
             echo "SOURCE_INTEGRITY=FAIL (member count mismatch)"; exit 1
           fi
 
-          mkdir -p "${SRC_ROOT}"
-          tar -xzf "${SOURCE_ARCHIVE}" -C "${SRC_ROOT}" || { echo "SOURCE_INTEGRITY=FAIL (extract failed)"; exit 1; }
-          SRC_FILES="$(find "${SRC_ROOT}" -type f | wc -l)"
-          SRC_SYMLINKS="$(find "${SRC_ROOT}" -type l | wc -l)"
+          # The static .incbin payload that init/_uh.S:40 embeds must ship inside the
+          # archive: no kbuild rule generates or copies it, so its presence is the
+          # precondition of the official in-tree build (run-3 blocker, asserted here
+          # in seconds instead of 12 seconds into an assembler run).
+          UH_IN_ARCHIVE="$(tar -tzf "${SOURCE_ARCHIVE}" | grep -c -E '(^|/)init/uh(\.[0-9]+g)?\.elf$' || true)"
+          echo "UH_BLOB_MEMBERS_IN_ARCHIVE=${UH_IN_ARCHIVE}"
+          [ "${UH_IN_ARCHIVE}" -ge 1 ] \
+            || { echo "SOURCE_INTEGRITY=FAIL (the init/_uh.S .incbin payload is not in the archive)"; exit 1; }
+          echo "SAMSUNG_OFFICIAL_BUILD_MODE=IN_TREE"
+          echo "OFFICIAL_USES_O=NO"
+
+          mkdir -p "${STOCK_SRC}"
+          tar -xzf "${SOURCE_ARCHIVE}" -C "${STOCK_SRC}" || { echo "SOURCE_INTEGRITY=FAIL (extract failed)"; exit 1; }
+          SRC_FILES="$(find "${STOCK_SRC}" -type f | wc -l)"
+          SRC_SYMLINKS="$(find "${STOCK_SRC}" -type l | wc -l)"
           echo "SRC_FILES=${SRC_FILES}"
           echo "SRC_SYMLINKS=${SRC_SYMLINKS}"
+          echo "EXTRACT_TARGET=${STOCK_SRC} (phase 1 of 2: the stock tree)"
           [ "${SRC_SYMLINKS}" -gt 0 ] || { echo "SOURCE_INTEGRITY=FAIL (no symlinks after extract)"; exit 1; }
-          [ -f "${SRC_ROOT}/Makefile" ] || { echo "SOURCE_INTEGRITY=FAIL (no Makefile at tree root)"; exit 1; }
+          [ -f "${STOCK_SRC}/Makefile" ] || { echo "SOURCE_INTEGRITY=FAIL (no Makefile at tree root)"; exit 1; }
+          [ -f "${STOCK_SRC}/init/uh.8g.elf" ] \
+            || { echo "SOURCE_INTEGRITY=FAIL (init/uh.8g.elf missing after extract)"; exit 1; }
+          [ -f "${STOCK_SRC}/init/_uh.S" ] \
+            || { echo "SOURCE_INTEGRITY=FAIL (init/_uh.S missing after extract)"; exit 1; }
           echo "SOURCE_INTEGRITY=PASS"
 
       - name: "phase 1b · pristine source check"
         run: |
           set -uo pipefail
           mkdir -p "${RESULTS}"
-          DEFCONFIG_PATH="${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}"
+          DEFCONFIG_PATH="${STOCK_SRC}/arch/arm64/configs/${{ inputs.defconfig }}"
           [ -f "${DEFCONFIG_PATH}" ] || { echo "PRISTINE=FAIL (defconfig missing)"; exit 1; }
           DEFCONFIG_SHA256="$(sha256sum "${DEFCONFIG_PATH}" | awk '{print $1}')"
-          echo "DEFCONFIG=${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}"
+          echo "DEFCONFIG=${STOCK_SRC}/arch/arm64/configs/${{ inputs.defconfig }}"
           echo "DEFCONFIG_SHA256=${DEFCONFIG_SHA256}"
           [ "${DEFCONFIG_SHA256}" = "${DEFCONFIG_SHA256_BEFORE_FIXED}" ] \
             || { echo "PRISTINE=FAIL (defconfig sha256 differs from the pinned stock hash)"; exit 1; }
-          [ -f "${SRC_ROOT}/drivers/usb/gadget/function/f_uac2.c" ] \
+          [ -f "${STOCK_SRC}/drivers/usb/gadget/function/f_uac2.c" ] \
             || { echo "PRISTINE=FAIL (f_uac2.c absent from the Samsung tree)"; exit 1; }
-          MODIFIED="$(find "${SRC_ROOT}" -name '*.orig' -o -name '*.rej' | wc -l)"
+          MODIFIED="$(find "${STOCK_SRC}" -name '*.orig' -o -name '*.rej' | wc -l)"
           echo "SOURCE_PATCH_RESIDUE=${MODIFIED}"
+          # A fresh extraction must not already carry build state: the in-tree build is
+          # only meaningful - and only reproducible - from a pristine tree.
+          [ ! -f "${STOCK_SRC}/.config" ] \
+            || { echo "PRISTINE=FAIL (the freshly extracted stock tree already has .config)"; exit 1; }
+          [ ! -f "${STOCK_SRC}/arch/arm64/boot/Image" ] \
+            || { echo "PRISTINE=FAIL (the freshly extracted stock tree already has an Image)"; exit 1; }
+          echo "SOURCE_TREE_BUILD_STATE=absent"
+          echo "BUILD_MODE_SAMSUNG=${BUILD_MODE_SAMSUNG}"
+          echo "OFFICIAL_USES_O=NO"
+          echo "SAMSUNG_OFFICIAL_BUILD_MODE=IN_TREE"
+          echo "SAMSUNG_EQUIVALENT_BUILD=YES (vendor build_kernel.sh also builds in the source tree)"
+          echo "UH_BLOB_PATH=init/uh.8g.elf"
+          echo "UH_BLOB_SIZE=$(stat -c '%s' "${STOCK_SRC}/init/uh.8g.elf")"
+          echo "UH_BLOB_SHA256=$(sha256sum "${STOCK_SRC}/init/uh.8g.elf" | awk '{print $1}')"
+          echo "UH_BLOB_GENERATED_OR_STATIC=STATIC (shipped inside the signed source archive; no kbuild rule generates or copies it)"
           {
             echo "PRIVATE_SOURCE_REPO=Sharkecho/note9-01"
             echo "PRIVATE_SOURCE_REF=${{ inputs.source_ref }}"
@@ -322,13 +376,32 @@ jobs:
             echo "SOURCE_SHA256=${{ needs.preflight.outputs.source_sha256 }}"
             echo "SOURCE_SIZE=${KERNEL_SOURCE_SIZE_FIXED}"
             echo "SOURCE_MEMBERS=${KERNEL_SOURCE_MEMBERS_FIXED}"
-            echo "DEFCONFIG=${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}"
+            echo "DEFCONFIG=${STOCK_SRC}/arch/arm64/configs/${{ inputs.defconfig }}"
             echo "DEFCONFIG_SHA256=${DEFCONFIG_SHA256}"
             echo "RUNNER_LABEL=${{ inputs.runner }}"
             echo "DEVICE_EXPECTED=${{ inputs.device }}"
-            echo "KERNEL_VERSION=$(make -s -C "${SRC_ROOT}" kernelversion)"
+            echo "KERNEL_VERSION=$(make -s -C "${STOCK_SRC}" kernelversion)"
           } > "${RESULTS}/source-identity.txt"
+          {
+            echo "RUN_ID=${GITHUB_RUN_ID}"
+            echo "RUN_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "RUNNER=${{ inputs.runner }}"
+            echo "BUILD_MODE=${{ inputs.build_mode }}"
+            echo "SAMSUNG_OFFICIAL_BUILD_MODE=IN_TREE"
+            echo "OFFICIAL_USES_O=NO"
+            echo "SOURCE_MODE=private release asset ${KERNEL_SOURCE_ASSET}"
+            echo "SOURCE_SHA256=${{ needs.preflight.outputs.source_sha256 }}"
+            echo "SOURCE_SIZE=${KERNEL_SOURCE_SIZE_FIXED}"
+            echo "SOURCE_MEMBERS=${KERNEL_SOURCE_MEMBERS_FIXED}"
+            echo "DEFCONFIG=${{ inputs.defconfig }}"
+            echo "DEFCONFIG_SHA256_BEFORE=${DEFCONFIG_SHA256_BEFORE_FIXED}"
+            echo "DEFCONFIG_SHA256_AFTER=${DEFCONFIG_SHA256_AFTER_FIXED}"
+            echo "DEVICE=${{ inputs.device }}"
+            echo "DEVICE_WRITES=0"
+            echo "K2_STARTED=NO"
+          } > "${RESULTS}/run-metadata.txt"
           cat "${RESULTS}/source-identity.txt"
+          cat "${RESULTS}/run-metadata.txt"
           echo "PRISTINE=PASS"
 
       - name: "phase 3 · UAC2 dependency check (Samsung 4.9.118 tree)"
@@ -339,19 +412,19 @@ jobs:
           record() { echo "$*" | tee -a "${OUT}"; }
 
           record "### Kconfig entry (drivers/usb/gadget/Kconfig)"
-          record "$(awk '/^config USB_CONFIGFS_F_UAC2$/,/^$/' "${SRC_ROOT}/drivers/usb/gadget/Kconfig")"
+          record "$(awk '/^config USB_CONFIGFS_F_UAC2$/,/^$/' "${STOCK_SRC}/drivers/usb/gadget/Kconfig")"
           record "### Kconfig entry (drivers/usb/gadget/function? USB_F_UAC2)"
-          record "$(grep -rn -A 6 '^config USB_F_UAC2$' "${SRC_ROOT}/drivers/usb/gadget/Kconfig" || true)"
+          record "$(grep -rn -A 6 '^config USB_F_UAC2$' "${STOCK_SRC}/drivers/usb/gadget/Kconfig" || true)"
           record "### Implementation present"
-          record "f_uac2.c   : $(ls -l "${SRC_ROOT}/drivers/usb/gadget/function/f_uac2.c" 2>/dev/null || echo ABSENT)"
-          record "u_audio.c  : $(ls -l "${SRC_ROOT}/drivers/usb/gadget/function/u_audio.c" 2>/dev/null || echo 'ABSENT (this tree keeps UAC2 self-contained in f_uac2.c)')"
-          record "Makefile   : $(grep -n 'uac2' "${SRC_ROOT}/drivers/usb/gadget/function/Makefile" || echo ABSENT)"
+          record "f_uac2.c   : $(ls -l "${STOCK_SRC}/drivers/usb/gadget/function/f_uac2.c" 2>/dev/null || echo ABSENT)"
+          record "u_audio.c  : $(ls -l "${STOCK_SRC}/drivers/usb/gadget/function/u_audio.c" 2>/dev/null || echo 'ABSENT (this tree keeps UAC2 self-contained in f_uac2.c)')"
+          record "Makefile   : $(grep -n 'uac2' "${STOCK_SRC}/drivers/usb/gadget/function/Makefile" || echo ABSENT)"
           record "### defconfig state"
-          record "target line: $(grep -n 'CONFIG_USB_CONFIGFS_F_UAC2' "${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}")"
+          record "target line: $(grep -n 'CONFIG_USB_CONFIGFS_F_UAC2' "${STOCK_SRC}/arch/arm64/configs/${{ inputs.defconfig }}")"
 
           need() {
             SYM="$1"
-            if grep -q "^${SYM}=y" "${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}"; then
+            if grep -q "^${SYM}=y" "${STOCK_SRC}/arch/arm64/configs/${{ inputs.defconfig }}"; then
               record "DEP_${SYM}=y"
             else
               record "DEP_${SYM}=MISSING"
@@ -366,9 +439,9 @@ jobs:
           need CONFIG_SND_PCM
           need CONFIG_USB_DWC3
           need CONFIG_USB_F_FS
-          grep -q 'dwc3.*udc\|udc' "${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}" \
+          grep -q 'dwc3.*udc\|udc' "${STOCK_SRC}/arch/arm64/configs/${{ inputs.defconfig }}" \
             && record "UDC_DRIVER=CONFIG_USB_DWC3 (present in defconfig)" || record "UDC_DRIVER=see CONFIG_USB_DWC3"
-          record "TARGET_LINE_COUNT=$(grep -c 'CONFIG_USB_CONFIGFS_F_UAC2' "${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}")"
+          record "TARGET_LINE_COUNT=$(grep -c 'CONFIG_USB_CONFIGFS_F_UAC2' "${STOCK_SRC}/arch/arm64/configs/${{ inputs.defconfig }}")"
           record "CONFIG_DELTA_COUNT=1"
           record "SOURCE_DELTA_COUNT=0"
           echo "UAC2_DEPENDENCIES=PASS"
@@ -379,13 +452,24 @@ jobs:
           set -uo pipefail
           mkdir -p "${RESULTS}/stock"
           RECIPE="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/kernel/scripts/build_kernel.sh"
-          bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${SRC_ROOT}" --out "${GITHUB_WORKSPACE}/${STOCK_OUT}" \
+          bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${STOCK_SRC}" --out "${GITHUB_WORKSPACE}/${STOCK_OUT}" \
+            --build-mode "${BUILD_MODE_SAMSUNG}" \
             --defconfig "${{ inputs.defconfig }}" \
             --expect-defconfig-sha256 "${DEFCONFIG_SHA256_BEFORE_FIXED}" \
             --expect-uac2-config not_set \
             2>&1 | tee "${RESULTS}/stock/recipe.txt"
           grep -q '^BUILD_RECIPE=OK$' "${RESULTS}/stock/recipe.txt" \
             || { echo "STOCK_BUILD=FAIL (recipe did not report OK)"; exit 1; }
+          # The stock phase must have run in the vendor's own mode - an O= build is a
+          # different compile path and is not an acceptable stock baseline.
+          grep -E '^(BUILD_MODE|IN_TREE_BUILD|OFFICIAL_USES_O|SAMSUNG_OFFICIAL_BUILD_MODE|SAMSUNG_EQUIVALENT_BUILD|BUILD_COMMAND_USES_O|KBUILD_OBJTREE|UH_BLOB_PRESENT|UH_BLOB_PATH|UH_BLOB_SIZE|UH_BLOB_SHA256|UH_BLOB_GENERATED_OR_STATIC)=' \
+            "${RESULTS}/stock/recipe.txt" | tee "${RESULTS}/stock/build-semantics.txt"
+          grep -q '^IN_TREE_BUILD=YES$' "${RESULTS}/stock/recipe.txt" \
+            || { echo "STOCK_BUILD=FAIL (stock phase did not build in-tree)"; exit 1; }
+          grep -q '^BUILD_COMMAND_USES_O=NO' "${RESULTS}/stock/recipe.txt" \
+            || { echo "STOCK_BUILD=FAIL (stock phase passed O= to make)"; exit 1; }
+          grep -q '^DEFCONFIG_SHA256_AFTER_BUILD=' "${RESULTS}/stock/recipe.txt" \
+            || { echo "STOCK_BUILD=FAIL (no post-build defconfig hash evidence)"; exit 1; }
 
           cp "${STOCK_OUT}/arch/arm64/boot/Image" "${RESULTS}/stock/Image"
           cp "${STOCK_OUT}/.config" "${RESULTS}/stock/.config"
@@ -410,20 +494,51 @@ jobs:
             [ -f "${STOCK_OUT}/${ev}" ] && cp "${STOCK_OUT}/${ev}" "${RESULTS}/stock/${ev}" || true
           done
           echo "STOCK_BUILD=PASS"
-          rm -rf "${STOCK_OUT}"
+          # Free the stock tree before the UAC2 phase extracts its own pristine copy: one
+          # tree at a time keeps peak disk use inside a standard ubuntu-22.04 runner. The
+          # Image, .config, logs and hashes this phase produced are already captured above.
+          rm -rf "${STOCK_SRC}"
+          echo "PURGE_STOCK_SRC=DONE (stock tree removed; only evidence retained)"
           df -h "$GITHUB_WORKSPACE" | tail -n 1
 
-      - name: "phase 4 · minimal UAC2 delta (config only)"
+      - name: "phase 4 · fresh UAC2 tree + minimal config delta (config only)"
         if: ${{ inputs.build_mode != 'stock' }}
         run: |
           set -uo pipefail
           mkdir -p "${RESULTS}/uac2"
-          DEFCONFIG_PATH="${SRC_ROOT}/arch/arm64/configs/${{ inputs.defconfig }}"
+          # Isolation by construction: the UAC2 phase never reuses the stock tree. It
+          # extracts its own copy from the SAME verified archive (size + sha256 + member
+          # count re-checked), and only that copy is patched.
+          SIZE_ACTUAL="$(stat -c '%s' "${SOURCE_ARCHIVE}")"
+          [ "${SIZE_ACTUAL}" = "${KERNEL_SOURCE_SIZE_FIXED}" ] \
+            || { echo "UAC2_DELTA=FAIL (archive size changed before the second extraction)"; exit 1; }
+          SHA_ACTUAL="$(sha256sum "${SOURCE_ARCHIVE}" | awk '{print $1}' | tr 'A-F' 'a-f')"
+          [ "${SHA_ACTUAL}" = "$(printf '%s' "${KERNEL_SOURCE_SHA256_FIXED}" | tr 'A-F' 'a-f')" ] \
+            || { echo "UAC2_DELTA=FAIL (archive sha256 changed before the second extraction)"; exit 1; }
+          MEMBERS_ACTUAL="$(tar -tzf "${SOURCE_ARCHIVE}" | wc -l)"
+          [ "${MEMBERS_ACTUAL}" = "${KERNEL_SOURCE_MEMBERS_FIXED}" ] \
+            || { echo "UAC2_DELTA=FAIL (archive member count changed before the second extraction)"; exit 1; }
+          [ ! -d "${UAC2_SRC}" ] \
+            || { echo "UAC2_DELTA=FAIL (${UAC2_SRC} already exists; refusing to reuse a tree)"; exit 1; }
+          mkdir -p "${UAC2_SRC}"
+          tar -xzf "${SOURCE_ARCHIVE}" -C "${UAC2_SRC}" \
+            || { echo "UAC2_DELTA=FAIL (second extraction failed)"; exit 1; }
+          [ -f "${UAC2_SRC}/Makefile" ] || { echo "UAC2_DELTA=FAIL (no Makefile in the UAC2 tree)"; exit 1; }
+          [ -f "${UAC2_SRC}/init/uh.8g.elf" ] \
+            || { echo "UAC2_DELTA=FAIL (the .incbin payload is missing from the UAC2 tree)"; exit 1; }
+          [ ! -f "${UAC2_SRC}/.config" ] \
+            || { echo "UAC2_DELTA=FAIL (the freshly extracted UAC2 tree already has .config)"; exit 1; }
+          echo "UAC2_SRC=${UAC2_SRC}"
+          echo "UAC2_SRC_FRESH_EXTRACT=YES (independent copy of the same verified archive)"
+          echo "STOCK_TREE_REUSED=NO"
+          echo "UH_BLOB_SHA256=$(sha256sum "${UAC2_SRC}/init/uh.8g.elf" | awk '{print $1}')"
+
+          DEFCONFIG_PATH="${UAC2_SRC}/arch/arm64/configs/${{ inputs.defconfig }}"
           PATCH="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/kernel/patches/K1_UAC2_MINIMAL.patch"
           BEFORE="$(sha256sum "${DEFCONFIG_PATH}" | awk '{print $1}')"
           [ "${BEFORE}" = "${DEFCONFIG_SHA256_BEFORE_FIXED}" ] \
             || { echo "UAC2_DELTA=FAIL (defconfig is not the pinned stock file before patching)"; exit 1; }
-          git apply -p1 --directory="${SRC_ROOT}" --verbose "${PATCH}" \
+          git apply -p1 --directory="${UAC2_SRC}" --verbose "${PATCH}" \
             || { echo "UAC2_DELTA=FAIL (patch did not apply)"; exit 1; }
           AFTER="$(sha256sum "${DEFCONFIG_PATH}" | awk '{print $1}')"
           echo "DEFCONFIG_SHA256_BEFORE=${BEFORE}"
@@ -446,18 +561,25 @@ jobs:
           echo "SOURCE_DELTA_COUNT=0"
           echo "UAC2_DELTA=PASS"
 
-      - name: "phase 5 · UAC2 clean build (new build directory)"
+      - name: "phase 5 · UAC2 clean build (fresh tree, in-tree build)"
         if: ${{ inputs.build_mode != 'stock' }}
         run: |
           set -uo pipefail
           RECIPE="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/kernel/scripts/build_kernel.sh"
-          bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${SRC_ROOT}" --out "${GITHUB_WORKSPACE}/${UAC2_OUT}" \
+          bash "${RECIPE}" --src "${GITHUB_WORKSPACE}/${UAC2_SRC}" --out "${GITHUB_WORKSPACE}/${UAC2_OUT}" \
+            --build-mode "${BUILD_MODE_SAMSUNG}" \
             --defconfig "${{ inputs.defconfig }}" \
             --expect-defconfig-sha256 "${DEFCONFIG_SHA256_AFTER_FIXED}" \
             --expect-uac2-config y \
             2>&1 | tee "${RESULTS}/uac2/recipe.txt"
           grep -q '^BUILD_RECIPE=OK$' "${RESULTS}/uac2/recipe.txt" \
             || { echo "UAC2_BUILD=FAIL (recipe did not report OK)"; exit 1; }
+          grep -E '^(BUILD_MODE|IN_TREE_BUILD|OFFICIAL_USES_O|SAMSUNG_OFFICIAL_BUILD_MODE|SAMSUNG_EQUIVALENT_BUILD|BUILD_COMMAND_USES_O|KBUILD_OBJTREE|UH_BLOB_PRESENT|UH_BLOB_PATH|UH_BLOB_SIZE|UH_BLOB_SHA256)=' \
+            "${RESULTS}/uac2/recipe.txt" | tee "${RESULTS}/uac2/build-semantics.txt"
+          grep -q '^IN_TREE_BUILD=YES$' "${RESULTS}/uac2/recipe.txt" \
+            || { echo "UAC2_BUILD=FAIL (uac2 phase did not build in-tree)"; exit 1; }
+          grep -q '^BUILD_COMMAND_USES_O=NO' "${RESULTS}/uac2/recipe.txt" \
+            || { echo "UAC2_BUILD=FAIL (uac2 phase passed O= to make)"; exit 1; }
 
           cp "${UAC2_OUT}/arch/arm64/boot/Image" "${RESULTS}/uac2/Image"
           cp "${UAC2_OUT}/.config" "${RESULTS}/uac2/.config"
@@ -478,6 +600,8 @@ jobs:
             [ -f "${UAC2_OUT}/${ev}" ] && cp "${UAC2_OUT}/${ev}" "${RESULTS}/uac2/${ev}" || true
           done
           echo "UAC2_BUILD=PASS"
+          rm -rf "${UAC2_SRC}"
+          echo "PURGE_UAC2_SRC=DONE (uac2 tree removed; only evidence retained)"
           df -h "$GITHUB_WORKSPACE" | tail -n 1
 
       - name: "phase 6+7 · static verification and stock-vs-uac2 comparison"
@@ -526,6 +650,14 @@ jobs:
           UAC2_CFG_FUAC2="$(grep -E '^BUILT_CONFIG_F_UAC2_STATE=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
           STOCK_CFG_VERIFIED="$(grep -E '^UAC2_CONFIG_VERIFIED=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
           UAC2_CFG_VERIFIED="$(grep -E '^UAC2_CONFIG_VERIFIED=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_MODE="$(grep -E '^SAMSUNG_OFFICIAL_BUILD_MODE=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_MODE="$(grep -E '^SAMSUNG_OFFICIAL_BUILD_MODE=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_INTREE="$(grep -E '^IN_TREE_BUILD=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_INTREE="$(grep -E '^IN_TREE_BUILD=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_USES_O="$(grep -E '^BUILD_COMMAND_USES_O=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_USES_O="$(grep -E '^BUILD_COMMAND_USES_O=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_UH_BLOB="$(grep -E '^UH_BLOB_SHA256=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_UH_BLOB="$(grep -E '^UH_BLOB_SHA256=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
 
           {
             echo "STOCK_CONFIG_SHA256=$(sha256sum "${STOCK_CONFIG}" | awk '{print $1}')"
@@ -540,6 +672,11 @@ jobs:
             echo "TARGET_CC_LINES=stock:${STOCK_TGT_LINES:-n/a} uac2:${UAC2_TGT_LINES:-n/a}"
             echo "TARGET_WHOLEFILE_FCOMMON_HITS=stock:${STOCK_TGT_WHOLE:-n/a} uac2:${UAC2_TGT_WHOLE:-n/a} (diagnostic only: whole transcript, includes reprinted host commands)"
             echo "BUILT_CONFIG_F_UAC2=stock:${STOCK_CFG_FUAC2:-n/a} uac2:${UAC2_CFG_FUAC2:-n/a} (read from the generated .config, not from the patch input)"
+            echo "SAMSUNG_OFFICIAL_BUILD_MODE=${STOCK_MODE:-n/a} (vendor build_kernel.sh:8,10 / AndroidKernel.mk:66,98 never pass O=)"
+            echo "OFFICIAL_USES_O=NO"
+            echo "IN_TREE_BUILD=stock:${STOCK_INTREE:-n/a} uac2:${UAC2_INTREE:-n/a}"
+            echo "BUILD_COMMAND_USES_O=stock:${STOCK_USES_O:-n/a} uac2:${UAC2_USES_O:-n/a}"
+            echo "UH_BLOB_SHA256=stock:${STOCK_UH_BLOB:-n/a} uac2:${UAC2_UH_BLOB:-n/a} (init/uh.8g.elf, the init/_uh.S .incbin payload)"
           } > "${RESULTS}/stock-vs-uac2.txt"
 
           {
@@ -566,6 +703,10 @@ jobs:
             echo "target -fcommon  : stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a} (intersection with target cc lines; must both be 0)"
             echo "whole-file hits  : stock=${STOCK_TGT_WHOLE:-n/a} uac2=${UAC2_TGT_WHOLE:-n/a} (diagnostic; host commands reprinted by -B are expected here)"
             echo "built .config    : stock CONFIG_USB_CONFIGFS_F_UAC2=${STOCK_CFG_FUAC2:-n/a} uac2=${UAC2_CFG_FUAC2:-n/a} (verified from .config, not from the patch)"
+            echo "build mode       : ${STOCK_MODE:-n/a} (Samsung official; the vendor scripts never pass O=)"
+            echo "in-tree build    : stock=${STOCK_INTREE:-n/a} uac2=${UAC2_INTREE:-n/a}  (assembler CWD = tree root)"
+            echo "O= used          : stock=${STOCK_USES_O:-n/a} uac2=${UAC2_USES_O:-n/a}  (must be NO for both phases)"
+            echo "uh .incbin blob  : ${STOCK_UH_BLOB:-n/a} (init/uh.8g.elf; identical in both phases)"
           } > "${RESULTS}/static-verification.txt"
           cat "${RESULTS}/static-verification.txt"
 
@@ -585,10 +726,28 @@ jobs:
             echo "host fix       : HOST_FIX_SCOPE=HOST_ONLY  HOSTCFLAGS = ${STOCK_HOSTCFLAGS:-n/a}"
             echo "host dtc       : stock=${STOCK_DTC:-n/a} uac2=${UAC2_DTC:-n/a}"
             echo "flag scope     : target_cc_lines stock=${STOCK_TGT_LINES:-n/a} uac2=${UAC2_TGT_LINES:-n/a}; target -fcommon hits stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a}"
+            echo "build mode     : ${STOCK_MODE:-n/a}  OFFICIAL_USES_O=NO  IN_TREE_BUILD stock=${STOCK_INTREE:-n/a} uac2=${UAC2_INTREE:-n/a}"
+            echo "uh .incbin blob: init/uh.8g.elf sha256=${STOCK_UH_BLOB:-n/a} (static payload shipped in the archive)"
             echo "artefacts      : stock/Image stock/.config uac2/Image uac2/.config SHA256SUMS config.diff"
             echo "device writes  : 0 (this workflow cannot reach a device)"
           } > "${RESULTS}/build-report.txt"
           cat "${RESULTS}/build-report.txt"
+
+          # Samsung-official build semantics are part of the acceptance evidence, not a
+          # convenience choice: both phases must have built in-tree with no O= anywhere.
+          if [ "${STOCK_INTREE:-x}" != "YES" ] || [ "${UAC2_INTREE:-x}" != "YES" ]; then
+            echo "STATIC_VERIFY=FAIL (a phase did not build in-tree: stock=${STOCK_MODE:-n/a}/${STOCK_INTREE:-n/a} uac2=${UAC2_MODE:-n/a}/${UAC2_INTREE:-n/a})"
+            exit 1
+          fi
+          case "${STOCK_USES_O:-x}" in NO*) : ;; *) echo "STATIC_VERIFY=FAIL (stock phase passed O= to make: ${STOCK_USES_O:-n/a})"; exit 1 ;; esac
+          case "${UAC2_USES_O:-x}" in NO*) : ;; *) echo "STATIC_VERIFY=FAIL (uac2 phase passed O= to make: ${UAC2_USES_O:-n/a})"; exit 1 ;; esac
+          if [ -z "${STOCK_UH_BLOB:-}" ] || [ "${STOCK_UH_BLOB}" != "${UAC2_UH_BLOB:-}" ]; then
+            echo "STATIC_VERIFY=FAIL (the init/_uh.S .incbin payload differs between phases: stock=${STOCK_UH_BLOB:-n/a} uac2=${UAC2_UH_BLOB:-n/a})"
+            exit 1
+          fi
+          echo "SAMSUNG_OFFICIAL_BUILD_MODE=IN_TREE"
+          echo "OFFICIAL_USES_O=NO"
+          echo "UH_BLOB_SHA256=${STOCK_UH_BLOB}"
 
           if [ "${CHANGED}" != "2" ] || [ "${UNEXPECTED}" != "0" ]; then
             echo "STATIC_VERIFY=FAIL (unexplained config drift: changed=${CHANGED} unexpected=${UNEXPECTED})"
@@ -645,15 +804,69 @@ jobs:
           } > "${RESULTS}/markers.txt"
           cat "${RESULTS}/markers.txt"
 
+      - name: "phase 8a · stage the evidence allowlist (no source tree, archive, binary or secret)"
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          rm -rf evidence
+          mkdir -p evidence
+          # A run that fails early must still leave usable evidence behind: the failure
+          # summary, the tail of the build log, the resolved .config and the hashes are
+          # what make a blocker diagnosable without re-running the build.
+          for f in SUMMARY.txt markers.txt run-metadata.txt source-identity.txt uac2-dependencies.txt; do
+            [ -f "${RESULTS}/${f}" ] && cp -f "${RESULTS}/${f}" evidence/
+          done
+          for d in stock uac2; do
+            [ -d "${RESULTS}/${d}" ] || continue
+            mkdir -p "evidence/${d}"
+            for name in build.log build-tail.txt failure-summary.txt recipe.txt build-semantics.txt config.diff SHA256SUMS .config; do
+              [ -f "${RESULTS}/${d}/${name}" ] && cp -f "${RESULTS}/${d}/${name}" "evidence/${d}/${name}"
+            done
+            # The built Image binaries are deliberately NOT uploaded: this is a PUBLIC
+            # build farm and a compiled kernel image is a derivative of proprietary
+            # Samsung source. Their size and sha256 travel as text instead.
+          done
+          if find evidence -type f \( -name '*.tar.gz' -o -name '*.o' -o -name '*.S' -o -name '*.c' -o -name '*.h' -o -name '*.ko' -o -name '.git*' \) | grep -q .; then
+            echo "EVIDENCE_ALLOWLIST=FAIL (a file class that must not leave the runner reached the evidence set)"
+            find evidence -type f | head -n 20
+            exit 1
+          fi
+          if grep -rIl -E 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' evidence >/dev/null 2>&1; then
+            echo "EVIDENCE_ALLOWLIST=FAIL (a credential-looking string reached the evidence set)"
+            exit 1
+          fi
+          echo "EVIDENCE_FILES=$(find evidence -type f | wc -l)"
+          echo "EVIDENCE_BYTES=$(du -sb evidence | awk '{print $1}')"
+          echo "EVIDENCE_ALLOWLIST=PASS (logs, failure extracts, configs, metadata and hashes only)"
+          find evidence -type f | sort
+
       - name: "phase 8 · upload build evidence"
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: note9-01-k1-uac2
-          path: ${{ env.RESULTS }}/
+          path: evidence/
           retention-days: 7
           if-no-files-found: error
           compression-level: 6
+
+      - name: "phase 8 (failure path) · upload failure evidence"
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-01-k1-uac2-failure
+          path: evidence/
+          retention-days: 7
+          if-no-files-found: warn
+          compression-level: 6
+
+      - name: "cleanup · drop the source trees and the source archive from the runner"
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          rm -rf "${STOCK_SRC}" "${UAC2_SRC}" "${SOURCE_ARCHIVE}"
+          echo "CLEANUP=DONE (stock tree, uac2 tree and the source archive removed)"
+          df -h "$GITHUB_WORKSPACE" | tail -n 1 || true
 
       - name: final markers
         if: ${{ always() }}
@@ -678,11 +891,23 @@ jobs:
               fi
             done
             if [ -f "${RESULTS}/markers.txt" ]; then
-              grep -E '^(UNEXPECTED_CONFIG_DRIFT|IMAGE_SIZE_DELTA|HOST_FIX_SCOPE|HOSTCFLAGS_EFFECTIVE|DTC_BUILD|TARGET_FCOMMON_HITS|TARGET_WHOLEFILE_FCOMMON_HITS|TARGET_CC_LINES|BUILT_CONFIG_F_UAC2|UAC2_CONFIG_VERIFIED|STATIC_VERIFY)=' "${RESULTS}/markers.txt" || true
+              grep -E '^(UNEXPECTED_CONFIG_DRIFT|IMAGE_SIZE_DELTA|HOST_FIX_SCOPE|HOSTCFLAGS_EFFECTIVE|DTC_BUILD|TARGET_FCOMMON_HITS|TARGET_WHOLEFILE_FCOMMON_HITS|TARGET_CC_LINES|BUILT_CONFIG_F_UAC2|UAC2_CONFIG_VERIFIED|SAMSUNG_OFFICIAL_BUILD_MODE|OFFICIAL_USES_O|IN_TREE_BUILD|BUILD_COMMAND_USES_O|UH_BLOB_SHA256|STATIC_VERIFY)=' "${RESULTS}/markers.txt" || true
             else
               echo "UNEXPECTED_CONFIG_DRIFT=unknown (static verification did not run)"
               echo "STATIC_VERIFY=NOT_REACHED"
             fi
+            # Even when the run dies in phase 2 or 5, the log must carry the real failure
+            # text and the build semantics that were actually used.
+            for d in stock uac2; do
+              if [ -f "${RESULTS}/${d}/failure-summary.txt" ]; then
+                echo "=== ${d} failure summary ==="
+                cat "${RESULTS}/${d}/failure-summary.txt"
+              fi
+              if [ -f "${RESULTS}/${d}/build-semantics.txt" ]; then
+                echo "=== ${d} build semantics ==="
+                cat "${RESULTS}/${d}/build-semantics.txt"
+              fi
+            done
             echo "SOURCE_INTEGRITY=$([ -f "${RESULTS}/source-identity.txt" ] && echo PASS || echo UNKNOWN)"
           } | tee -a "${RESULTS}/SUMMARY.txt" || true
           df -h "$GITHUB_WORKSPACE" | tail -n 1 || true
