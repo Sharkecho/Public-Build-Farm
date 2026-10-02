@@ -1,0 +1,358 @@
+name: Note9-01 Kernel Build (public build farm)
+
+# target: note9-01-kernel
+#   PRIVATE source : Sharkecho/note9-01   (source of truth, checked out at runtime)
+#   PUBLIC compute : 本仓库（GitHub-hosted runner, ubuntu-22.04）
+#   design doc     : https://github.com/Sharkecho/note9-01/blob/main/docs/GITHUB_CLOUD_BUILD.md
+#
+# 铁律（AGENTS.md + GLOBAL_BUILD_COMPUTE_POLICY）：
+#   * 只有 workflow_dispatch —— 无 push / pull_request / schedule 触发；
+#   * 私有源码仅在运行时以 BUILD_FARM_SOURCE_TOKEN（fine-grained, Contents: Read-only）取出，
+#     persist-credentials: false；绝不打印 token / secret（只判断“存在”）；
+#   * 本仓库不保存任何私有源码、私有 patch、SSOT、device 证据；
+#   * github.sha / github.repository / GITHUB_TOKEN 指向的是本 PUBLIC 仓库，
+#     所以源码身份显式取自私有 checkout 的 git rev-parse HEAD；
+#   * artifact 仅白名单内容（Image / .config / config.diff / SHA256SUMS / 报告），retention 7 天；
+#   * DEVICE_WRITES = 0 —— 本 workflow 不运行 adb、不接触手机、不刷机；
+#   * 旧 target note9-kernel.yml（note9-liveos）保持不变，作为人工回退。
+#
+# 当前状态：接口已接线、通过干跑校验；尚未启动任何 run。
+# 启动条件：owner 明确授权后手动 dispatch，且 BUILD_FARM_SOURCE_TOKEN 已覆盖 Sharkecho/note9-01。
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: "构建模式：stock=只建基线 / uac2=只建 UAC2 / compare=两者并比较"
+        required: true
+        default: "stock"
+        type: choice
+        options:
+          - stock
+          - uac2
+          - compare
+      source_ref:
+        description: "私有仓库 Sharkecho/note9-01 的 branch/tag/SHA"
+        required: true
+        default: "main"
+        type: string
+      source_sha256:
+        description: "Samsung 源码包 sha256（必填；为空或校验失败即 fail）"
+        required: true
+        default: "5A74817F8572A3096FDA2A1E3256595F5C1434084939A91B59E3E10F3002FB39"
+        type: string
+      device:
+        description: "期望机型（身份断言，不符即 fail）"
+        required: true
+        default: "SM-N960N"
+        type: string
+      defconfig:
+        description: "期望 defconfig（身份断言，不符即 fail）"
+        required: true
+        default: "exynos9810-crownlteks_defconfig"
+        type: string
+      runner:
+        description: "runner（仅 GitHub-hosted，禁付费 Larger Runner）"
+        required: true
+        default: "ubuntu-22.04"
+        type: choice
+        options:
+          - ubuntu-22.04
+      source_asset_tag:
+        description: "release-asset 模式：私有仓库的 Release tag"
+        required: false
+        default: "n960n-source-N960NKSU3FVG4"
+        type: string
+      source_asset_name:
+        description: "release-asset 模式：asset 文件名"
+        required: false
+        default: "SM-N960N_KOR_QQ_Opensource.zip"
+        type: string
+      source_url:
+        description: "直链模式（可选；留空＝使用 release asset）"
+        required: false
+        default: ""
+        type: string
+      baseline_run_id:
+        description: "uac2 / compare 必填：已 PASS 的 stock run id"
+        required: false
+        default: ""
+        type: string
+      baseline_image_sha256:
+        description: "uac2 / compare 必填：baseline Image 的 sha256"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: "note9-01-kernel-${{ inputs.source_ref }}-${{ inputs.build_mode }}"
+  cancel-in-progress: false
+
+env:
+  SOURCE_ARCHIVE: "downloads/SM-N960N_KOR_QQ_Opensource.zip"
+  SRC_ROOT: "kernel-src"
+  STOCK_OUT: "build/stock"
+  UAC2_OUT: "build/uac2"
+  RESULTS: "results"
+
+jobs:
+  preflight:
+    name: "preflight"
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    outputs:
+      acquisition: ${{ steps.acq.outputs.mode }}
+      source_sha256: ${{ steps.sha.outputs.value }}
+    steps:
+      - name: "输入门禁（fail-closed）"
+        run: |
+          set -euo pipefail
+          echo "TARGET=note9-01-kernel"
+          echo "BUILD_MODE=${{ inputs.build_mode }}"
+          [ "${{ inputs.device }}" = "SM-N960N" ] || { echo "DEVICE_INPUT=FAIL"; exit 1; }
+          echo "DEVICE_INPUT=OK"
+          [ "${{ inputs.defconfig }}" = "exynos9810-crownlteks_defconfig" ] || { echo "DEFCONFIG_INPUT=FAIL"; exit 1; }
+          echo "DEFCONFIG_INPUT=OK"
+          [ "${{ inputs.runner }}" = "ubuntu-22.04" ] || { echo "RUNNER_INPUT=FAIL"; exit 1; }
+          echo "RUNNER_INPUT=OK"
+          case "${{ inputs.build_mode }}" in
+            stock|uac2|compare) echo "BUILD_MODE_INPUT=OK" ;;
+            *) echo "BUILD_MODE_INPUT=FAIL"; exit 1 ;;
+          esac
+          if [ "${{ inputs.build_mode }}" != "stock" ]; then
+            [ -n "${{ inputs.baseline_run_id }}" ] || { echo "BASELINE_REF=FAIL (baseline_run_id required)"; exit 1; }
+            [ -n "${{ inputs.baseline_image_sha256 }}" ] || { echo "BASELINE_REF=FAIL (baseline_image_sha256 required)"; exit 1; }
+          fi
+          echo "BASELINE_REF=OK"
+
+      - name: "sha256 输入规范化"
+        id: sha
+        run: |
+          set -euo pipefail
+          VALUE="$(printf '%s' '${{ inputs.source_sha256 }}' | tr 'A-F' 'a-f')"
+          printf '%s' "${VALUE}" | grep -Eq '^[0-9a-f]{64}$' || { echo "SOURCE_SHA256_INPUT=FAIL"; exit 1; }
+          echo "value=${VALUE}" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_SHA256_INPUT=OK"
+
+      - name: "源码来源模式"
+        id: acq
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.source_url }}" ]; then
+            echo "mode=url" >> "$GITHUB_OUTPUT"
+            echo "SOURCE_TRANSFER_METHOD=URL"
+          else
+            echo "mode=asset" >> "$GITHUB_OUTPUT"
+            echo "SOURCE_TRANSFER_METHOD=PRIVATE_RELEASE_ASSET"
+            echo "SOURCE_ASSET_TAG=${{ inputs.source_asset_tag }}"
+            echo "SOURCE_ASSET_NAME=${{ inputs.source_asset_name }}"
+          fi
+
+      - name: "私有源码凭据存在性（只判断存在，绝不打值）"
+        env:
+          TOKEN_PRESENT: ${{ secrets.BUILD_FARM_SOURCE_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [ "${TOKEN_PRESENT}" != "true" ]; then
+            echo "PRIVATE_SOURCE_ACCESS=FAIL (secret BUILD_FARM_SOURCE_TOKEN is not set)"
+            echo "REQUIRED_PERMISSION=Contents:Read-only on Sharkecho/note9-01"
+            exit 1
+          fi
+          echo "PRIVATE_SOURCE_ACCESS=TOKEN_PRESENT"
+          echo "REQUIRED_PERMISSION=Contents:Read-only on Sharkecho/note9-01"
+
+  build:
+    name: '${{ inputs.build_mode }} · ${{ inputs.defconfig }}'
+    needs: preflight
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 300
+    steps:
+      - name: "Checkout 私有源码（运行时取出，read-only）"
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/note9-01
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: "私有源码身份（不使用 github.sha / github.repository）"
+        run: |
+          set -euo pipefail
+          echo "PRIVATE_SOURCE_REPO=Sharkecho/note9-01"
+          echo "PRIVATE_SOURCE_REF=${{ inputs.source_ref }}"
+          echo "PRIVATE_SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "PUBLIC_WORKFLOW_REPO=${{ github.repository }}"
+          echo "PUBLIC_WORKFLOW_SHA=${{ github.sha }}"
+          echo "BUILD_RUN_ID=${{ github.run_id }}"
+
+      - name: "获取 Samsung 官方源码包（asset 优先，然后 sha256 门禁）"
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloads
+          if [ "${{ needs.preflight.outputs.acquisition }}" = "asset" ]; then
+            gh release download "${{ inputs.source_asset_tag }}" \
+              --repo "Sharkecho/note9-01" \
+              --pattern "${{ inputs.source_asset_name }}" \
+              --dir downloads --clobber \
+              || { echo "SOURCE_ACQUIRE=FAIL (release asset unavailable)"; exit 1; }
+          else
+            curl -fsSL --retry 3 --retry-delay 5 -o "${SOURCE_ARCHIVE}" "${{ inputs.source_url }}" \
+              || { echo "SOURCE_ACQUIRE=FAIL (url download failed)"; exit 1; }
+          fi
+          [ -s "${SOURCE_ARCHIVE}" ] || { echo "SOURCE_ACQUIRE=FAIL (empty archive)"; exit 1; }
+          echo "SOURCE_ACQUIRE=OK"
+          EXPECTED="${{ needs.preflight.outputs.source_sha256 }}"
+          ACTUAL="$(sha256sum "${SOURCE_ARCHIVE}" | awk '{print $1}')"
+          echo "SOURCE_SHA256_EXPECTED=${EXPECTED}"
+          echo "SOURCE_SHA256_ACTUAL=${ACTUAL}"
+          [ "${EXPECTED}" = "${ACTUAL}" ] || { echo "SOURCE_SHA256=FAIL"; exit 1; }
+          echo "SOURCE_SHA256=OK"
+          echo "SOURCE_BYTES=$(stat -c '%s' "${SOURCE_ARCHIVE}")"
+
+      - name: "Linux 原生解压（保留符号链接与大小写语义）"
+        run: |
+          set -euo pipefail
+          mkdir -p "${SRC_ROOT}"
+          tar -xf "${SOURCE_ARCHIVE}" -C "${SRC_ROOT}"
+          tar -xzf "${SRC_ROOT}/Kernel.tar.gz" -C "${SRC_ROOT}"
+          echo "SOURCE_EXTRACT=OK"
+          echo "SRC_FILES=$(find "${SRC_ROOT}" -type f | wc -l)"
+
+      - name: "源码 pristine 校验（不猜版本）"
+        run: |
+          set -euo pipefail
+          cd "${SRC_ROOT}"
+          grep -q '^VERSION = 4$' Makefile || { echo "PRISTINE=FAIL (VERSION)"; exit 1; }
+          grep -q '^PATCHLEVEL = 9$' Makefile || { echo "PRISTINE=FAIL (PATCHLEVEL)"; exit 1; }
+          grep -q '^SUBLEVEL = 118$' Makefile || { echo "PRISTINE=FAIL (SUBLEVEL)"; exit 1; }
+          echo "KERNEL_VERSION=4.9.118"
+          test -f "arch/arm64/configs/${{ inputs.defconfig }}" || { echo "PRISTINE=FAIL (defconfig missing)"; exit 1; }
+          test -f drivers/usb/gadget/function/f_uac2.c || { echo "PRISTINE=FAIL (f_uac2.c missing)"; exit 1; }
+          grep -q '^config USB_CONFIGFS_F_UAC2$' drivers/usb/gadget/Kconfig || { echo "PRISTINE=FAIL (Kconfig entry missing)"; exit 1; }
+          echo "PRISTINE=OK"
+
+      - name: "stock 阶段：defconfig → 干净编译 → 记录哈希"
+        if: ${{ inputs.build_mode != 'uac2' }}
+        run: |
+          set -euo pipefail
+          SRC="${PWD}/${SRC_ROOT}"
+          OUT="${PWD}/${STOCK_OUT}"
+          RECIPE="${SRC}/kernel/scripts/build_kernel.sh"
+          mkdir -p "${RESULTS}"
+          [ -f "${RECIPE}" ] || { echo "BUILD_RECIPE=ABSENT (private repo must provide kernel/scripts/build_kernel.sh — K1 STEP 6)"; exit 1; }
+          rm -rf "${OUT}"; mkdir -p "${OUT}"
+          bash "${RECIPE}" --src "${SRC}" --out "${OUT}" --defconfig "${{ inputs.defconfig }}"
+          test -s "${OUT}/arch/arm64/boot/Image" || { echo "STOCK_BUILD=FAIL (no Image)"; exit 1; }
+          test -s "${OUT}/.config" || { echo "STOCK_BUILD=FAIL (no .config)"; exit 1; }
+          cp "${OUT}/.config" "${RESULTS}/stock.config"
+          cp "${OUT}/arch/arm64/boot/Image" "${RESULTS}/stock.Image"
+          echo "STOCK_BUILD=OK"
+          echo "STOCK_IMAGE_SHA256=$(sha256sum "${RESULTS}/stock.Image" | awk '{print $1}')"
+
+      - name: "uac2 阶段：最小 delta → 干净编译 → 配置校验"
+        if: ${{ inputs.build_mode != 'stock' }}
+        run: |
+          set -euo pipefail
+          SRC="${PWD}/${SRC_ROOT}"
+          OUT="${PWD}/${UAC2_OUT}"
+          RECIPE="${SRC}/kernel/scripts/build_kernel.sh"
+          PATCH="${SRC}/kernel/patches/K1_UAC2_MINIMAL.patch"
+          mkdir -p "${RESULTS}"
+          [ -f "${RECIPE}" ] || { echo "BUILD_RECIPE=ABSENT (private repo must provide kernel/scripts/build_kernel.sh — K1 STEP 6)"; exit 1; }
+          [ -f "${PATCH}" ] || { echo "UAC2_PATCH=ABSENT (private repo must provide kernel/patches/K1_UAC2_MINIMAL.patch — K1 STEP 3)"; exit 1; }
+          DEFCONFIG_PATH="${SRC}/arch/arm64/configs/${{ inputs.defconfig }}"
+          BEFORE="$(sha256sum "${DEFCONFIG_PATH}" | awk '{print $1}')"
+          git apply -p1 --unidiff-zero --directory="${SRC_ROOT}" "${PATCH}" \
+            || { echo "UAC2_EDIT=FAIL (patch did not apply)"; exit 1; }
+          AFTER="$(sha256sum "${DEFCONFIG_PATH}" | awk '{print $1}')"
+          echo "DEFCONFIG_SHA256_BEFORE=${BEFORE}"
+          echo "DEFCONFIG_SHA256_AFTER=${AFTER}"
+          [ "${BEFORE}" != "${AFTER}" ] || { echo "UAC2_EDIT=FAIL (defconfig unchanged)"; exit 1; }
+          echo "UAC2_EDIT=OK"
+          rm -rf "${OUT}"; mkdir -p "${OUT}"
+          bash "${RECIPE}" --src "${SRC}" --out "${OUT}" --defconfig "${{ inputs.defconfig }}"
+          test -s "${OUT}/arch/arm64/boot/Image" || { echo "UAC2_BUILD=FAIL (no Image)"; exit 1; }
+          test -s "${OUT}/.config" || { echo "UAC2_BUILD=FAIL (no .config)"; exit 1; }
+          cp "${OUT}/.config" "${RESULTS}/uac2.config"
+          cp "${OUT}/arch/arm64/boot/Image" "${RESULTS}/uac2.Image"
+          echo "UAC2_BUILD=OK"
+          echo "UAC2_IMAGE_SHA256=$(sha256sum "${RESULTS}/uac2.Image" | awk '{print $1}')"
+          grep -q '^CONFIG_USB_CONFIGFS_F_UAC2=y$' "${OUT}/.config" || { echo "UAC2_CONFIG=FAIL (CONFIG_USB_CONFIGFS_F_UAC2 != y)"; exit 1; }
+          echo "UAC2_CONFIG=OK"
+
+      - name: "baseline 证据取回与比对（uac2 / compare）"
+        if: ${{ inputs.build_mode != 'stock' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "${{ inputs.baseline_run_id }}" \
+            --repo "${{ github.repository }}" \
+            --name "note9-01-kernel-stock" \
+            --dir baseline \
+            || { echo "BASELINE_FETCH=FAIL"; exit 1; }
+          [ -s baseline/stock.Image ] || { echo "BASELINE_FETCH=FAIL (no stock.Image)"; exit 1; }
+          BASE_SHA="$(sha256sum baseline/stock.Image | awk '{print $1}')"
+          echo "BASELINE_IMAGE_SHA256=${BASE_SHA}"
+          [ "${BASE_SHA}" = "${{ inputs.baseline_image_sha256 }}" ] || { echo "BASELINE_IMAGE=FAIL (hash mismatch)"; exit 1; }
+          echo "BASELINE_IMAGE=OK"
+          if [ -s baseline/stock.config ]; then
+            diff -u baseline/stock.config "${RESULTS}/uac2.config" > "${RESULTS}/config.diff" || true
+            echo "CONFIG_DIFF_LINES=$(grep -c '' "${RESULTS}/config.diff" || true)"
+          fi
+
+      - name: "compare 汇总（config.diff / 体积 / 哈希）"
+        if: ${{ inputs.build_mode == 'compare' }}
+        run: |
+          set -euo pipefail
+          diff -u "${RESULTS}/stock.config" "${RESULTS}/uac2.config" > "${RESULTS}/config.diff" || true
+          echo "STOCK_IMAGE_BYTES=$(stat -c '%s' "${RESULTS}/stock.Image")"
+          echo "UAC2_IMAGE_BYTES=$(stat -c '%s' "${RESULTS}/uac2.Image")"
+          echo "CONFIG_DIFF_LINES=$(grep -c '' "${RESULTS}/config.diff" || true)"
+          grep -E '^[+-]CONFIG_(USB_CONFIGFS_F_UAC2|USB_F_UAC2|SND|USB_CONFIGFS)\b' "${RESULTS}/config.diff" || true
+
+      - name: "静态校验与证据清单"
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "${RESULTS}"
+          {
+            echo "target=note9-01-kernel"
+            echo "build_mode=${{ inputs.build_mode }}"
+            echo "device=${{ inputs.device }}"
+            echo "defconfig=${{ inputs.defconfig }}"
+            echo "runner=${{ inputs.runner }}"
+            echo "private_source_repo=Sharkecho/note9-01"
+            echo "private_source_ref=${{ inputs.source_ref }}"
+            echo "public_workflow_repo=${{ github.repository }}"
+            echo "run_id=${{ github.run_id }}"
+            echo "source_sha256_expected=${{ needs.preflight.outputs.source_sha256 }}"
+          } > "${RESULTS}/build-report.txt"
+          if [ -f "${RESULTS}/stock.Image" ] && [ -f "${RESULTS}/uac2.Image" ]; then
+            if cmp -s "${RESULTS}/stock.Image" "${RESULTS}/uac2.Image"; then
+              echo "STATIC_VERIFY=FAIL (stock and uac2 Image are byte-identical)";
+            else
+              echo "STATIC_VERIFY=OK (stock/uac2 Image differ as expected)";
+            fi
+          else
+            echo "STATIC_VERIFY=PARTIAL (single-mode build; comparison needs compare mode)"
+          fi
+          ( cd "${RESULTS}" && sha256sum * > SHA256SUMS 2>/dev/null || true )
+          echo "EVIDENCE_FILES=$(find "${RESULTS}" -maxdepth 1 -type f | wc -l)"
+          echo "PRIVATE_SOURCE_IN_ARTIFACT=none"
+
+      - name: "上传 artifact（白名单，7 天）"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "note9-01-kernel-${{ inputs.build_mode }}"
+          path: results/
+          retention-days: 7
+          if-no-files-found: warn
