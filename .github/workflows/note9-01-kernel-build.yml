@@ -501,6 +501,17 @@ jobs:
           UAC2_SYM="$(grep -E '^UAC2_SYMBOL_STATUS=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
           STOCK_MODS="$(grep -E '^MODULES_BUILT=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
           UAC2_MODS="$(grep -E '^MODULES_BUILT=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_HOSTCFLAGS="$(grep -E '^HOSTCFLAGS_EFFECTIVE=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2-)"
+          UAC2_HOSTCFLAGS="$(grep -E '^HOSTCFLAGS_EFFECTIVE=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2-)"
+          STOCK_SCOPE="$(grep -E '^HOSTCFLAGS_SCOPE_PROOF=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2-)"
+          UAC2_SCOPE="$(grep -E '^HOSTCFLAGS_SCOPE_PROOF=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2-)"
+          STOCK_DTC="$(grep -E '^DTC_BUILD=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_DTC="$(grep -E '^DTC_BUILD=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_TGT_HITS="$(grep -E '^TARGET_FCOMMON_HITS=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_TGT_HITS="$(grep -E '^TARGET_FCOMMON_HITS=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_TGT_LINES="$(grep -E '^TARGET_CC_LINES=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
+          UAC2_TGT_LINES="$(grep -E '^TARGET_CC_LINES=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
+          STOCK_HOST_FLAGS="$(grep -E '^HOST_CC_VERSION=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2-)"
 
           {
             echo "STOCK_CONFIG_SHA256=$(sha256sum "${STOCK_CONFIG}" | awk '{print $1}')"
@@ -508,6 +519,11 @@ jobs:
             echo "IMAGE_SIZE_DELTA=${IMAGE_SIZE_DELTA}"
             echo "UAC2_SYMBOL_STATUS=${UAC2_SYM}"
             echo "BUILD_WARNING_DELTA=${BUILD_WARNING_DELTA}"
+            echo "HOST_FIX_SCOPE=HOST_ONLY"
+            echo "HOSTCFLAGS_EFFECTIVE=${STOCK_HOSTCFLAGS:-n/a}"
+            echo "DTC_BUILD=stock:${STOCK_DTC:-n/a} uac2:${UAC2_DTC:-n/a}"
+            echo "TARGET_FCOMMON_HITS=stock:${STOCK_TGT_HITS:-n/a} uac2:${UAC2_TGT_HITS:-n/a}"
+            echo "TARGET_CC_LINES=stock:${STOCK_TGT_LINES:-n/a} uac2:${UAC2_TGT_LINES:-n/a}"
           } > "${RESULTS}/stock-vs-uac2.txt"
 
           {
@@ -525,6 +541,13 @@ jobs:
             echo "stock .config    :"
             grep -E 'CONFIG_USB_CONFIGFS_F_UAC2|CONFIG_USB_F_UAC2|CONFIG_SND_PCM|CONFIG_USB_LIBCOMPOSITE' "${STOCK_CONFIG}" || true
             echo "conflicting 'is not set' lines in uac2 .config: $(grep -c '^# CONFIG_USB_CONFIGFS_F_UAC2 is not set$' "${UAC2_CONFIG}" || true)"
+            echo "host fix scope   : HOST_ONLY (HOST_BUILD_COMPATIBILITY_FIX, not a kernel source patch)"
+            echo "host cc          : ${STOCK_HOST_FLAGS:-n/a}"
+            echo "hostflags        : ${STOCK_HOSTCFLAGS:-n/a}"
+            echo "host dtc         : stock=${STOCK_DTC:-n/a} uac2=${UAC2_DTC:-n/a}"
+            echo "host-only proof  : stock=${STOCK_SCOPE:-n/a} uac2=${UAC2_SCOPE:-n/a}"
+            echo "target cc lines  : stock=${STOCK_TGT_LINES:-n/a} uac2=${UAC2_TGT_LINES:-n/a} (target probe must be non-empty)"
+            echo "target -fcommon  : stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a} (must both be 0)"
           } > "${RESULTS}/static-verification.txt"
           cat "${RESULTS}/static-verification.txt"
 
@@ -541,6 +564,9 @@ jobs:
             echo "stock build s  : $(grep -E '^BUILD_SECONDS=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
             echo "uac2  build s  : $(grep -E '^BUILD_SECONDS=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
             echo "config delta   : CONFIG_DELTA_COUNT=1  SOURCE_DELTA_COUNT=0"
+            echo "host fix       : HOST_FIX_SCOPE=HOST_ONLY  HOSTCFLAGS = ${STOCK_HOSTCFLAGS:-n/a}"
+            echo "host dtc       : stock=${STOCK_DTC:-n/a} uac2=${UAC2_DTC:-n/a}"
+            echo "flag scope     : target_cc_lines stock=${STOCK_TGT_LINES:-n/a} uac2=${UAC2_TGT_LINES:-n/a}; target -fcommon hits stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a}"
             echo "artefacts      : stock/Image stock/.config uac2/Image uac2/.config SHA256SUMS config.diff"
             echo "device writes  : 0 (this workflow cannot reach a device)"
           } > "${RESULTS}/build-report.txt"
@@ -554,7 +580,41 @@ jobs:
             echo "STATIC_VERIFY=FAIL (f_uac2 not found in the uac2 built-in objects)"
             exit 1
           fi
+          if [ "${STOCK_DTC:-FAIL}" != "PASS" ] || [ "${UAC2_DTC:-FAIL}" != "PASS" ]; then
+            echo "STATIC_VERIFY=FAIL (host dtc tool did not build: stock=${STOCK_DTC:-n/a} uac2=${UAC2_DTC:-n/a})"
+            exit 1
+          fi
+          if [ "${STOCK_TGT_HITS:-x}" != "0" ] || [ "${UAC2_TGT_HITS:-x}" != "0" ]; then
+            echo "STATIC_VERIFY=FAIL (-fcommon reached the ARCH=arm64 target compile flags: stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a})"
+            exit 1
+          fi
+          if [ "${STOCK_TGT_LINES:-0}" = "0" ] || [ "${UAC2_TGT_LINES:-0}" = "0" ] \
+             || [ "${STOCK_TGT_LINES:-0}" = "" ] || [ "${UAC2_TGT_LINES:-0}" = "" ]; then
+            echo "STATIC_VERIFY=FAIL (flag-scope evidence inconclusive: target cc lines stock=${STOCK_TGT_LINES:-none} uac2=${UAC2_TGT_LINES:-none})"
+            exit 1
+          fi
+          echo "HOST_FIX_SCOPE=HOST_ONLY"
+          echo "HOSTCFLAGS_EFFECTIVE=${STOCK_HOSTCFLAGS:-n/a}"
+          echo "TARGET_FCOMMON_HITS=0"
           echo "STATIC_VERIFY=PASS"
+          {
+            echo "EXPECTED_CONFIG_DELTA=2"
+            echo "UNEXPECTED_CONFIG_DRIFT=${UNEXPECTED}"
+            echo "CONFIG_DELTA_COUNT=1"
+            echo "SOURCE_DELTA_COUNT=0"
+            echo "IMAGE_SIZE_DELTA=${IMAGE_SIZE_DELTA}"
+            echo "BUILD_WARNING_DELTA=${BUILD_WARNING_DELTA}"
+            echo "STOCK_CONFIG_SHA256=$(sha256sum "${STOCK_CONFIG}" | awk '{print $1}')"
+            echo "UAC2_CONFIG_SHA256=$(sha256sum "${UAC2_CONFIG}" | awk '{print $1}')"
+            echo "HOST_FIX_SCOPE=HOST_ONLY"
+            echo "HOSTCFLAGS_EFFECTIVE=${STOCK_HOSTCFLAGS:-n/a}"
+            echo "DTC_BUILD=stock:${STOCK_DTC:-n/a} uac2:${UAC2_DTC:-n/a}"
+            echo "TARGET_FCOMMON_HITS=0"
+            echo "TARGET_CC_LINES=stock:${STOCK_TGT_LINES:-n/a} uac2:${UAC2_TGT_LINES:-n/a}"
+            echo "UAC2_SYMBOL_STATUS=${UAC2_SYM}"
+            echo "STATIC_VERIFY=PASS"
+          } > "${RESULTS}/markers.txt"
+          cat "${RESULTS}/markers.txt"
 
       - name: "phase 8 · upload build evidence"
         if: ${{ success() }}
@@ -578,5 +638,22 @@ jobs:
             echo "UAC2_DEPENDENCIES=$( [ -f "${RESULTS}/uac2-dependencies.txt" ] && echo PASS || echo NOT_RUN )"
             echo "DEVICE_WRITES=0"
             echo "K2_STARTED=NO"
+            for pair in "stock:STOCK" "uac2:UAC2"; do
+              dir="${pair%%:*}"; tag="${pair##*:}"
+              if [ -f "${RESULTS}/${dir}/Image" ]; then
+                echo "${tag}_IMAGE_SIZE=$(stat -c '%s' "${RESULTS}/${dir}/Image")"
+                echo "${tag}_IMAGE_SHA256=$(sha256sum "${RESULTS}/${dir}/Image" | awk '{print $1}')"
+              else
+                echo "${tag}_IMAGE_SIZE=absent"
+                echo "${tag}_IMAGE_SHA256=absent"
+              fi
+            done
+            if [ -f "${RESULTS}/markers.txt" ]; then
+              grep -E '^(UNEXPECTED_CONFIG_DRIFT|IMAGE_SIZE_DELTA|HOST_FIX_SCOPE|HOSTCFLAGS_EFFECTIVE|DTC_BUILD|TARGET_FCOMMON_HITS|TARGET_CC_LINES|STATIC_VERIFY)=' "${RESULTS}/markers.txt" || true
+            else
+              echo "UNEXPECTED_CONFIG_DRIFT=unknown (static verification did not run)"
+              echo "STATIC_VERIFY=NOT_REACHED"
+            fi
+            echo "SOURCE_INTEGRITY=$([ -f "${RESULTS}/source-identity.txt" ] && echo PASS || echo UNKNOWN)"
           } | tee -a "${RESULTS}/SUMMARY.txt" || true
           df -h "$GITHUB_WORKSPACE" | tail -n 1 || true
