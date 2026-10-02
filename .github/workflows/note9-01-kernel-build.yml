@@ -534,7 +534,7 @@ jobs:
             echo "runner         : ${{ inputs.runner }}"
             echo "source mode    : private release asset ${{ inputs.source_asset_tag }}/${{ inputs.source_asset_name }}"
             echo "source sha256  : ${{ needs.preflight.outputs.source_sha256 }}"
-            echo "source sha     : $(grep -E '^PRIVATE_SOURCE_SHA=' "${RESULTS}/source-identity.txt" | cut -d= -f2)"
+            echo "source sha     : $(grep -E '^PRIVATE_SOURCE_SHA_SHORT=' "${RESULTS}/source-identity.txt" | cut -d= -f2) (short)"
             echo "defconfig      : ${{ inputs.defconfig }}"
             echo "gcc (stock)    : $(grep -E '^GCC_VERSION=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2-)"
             echo "gcc (uac2)     : $(grep -E '^GCC_VERSION=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2-)"
