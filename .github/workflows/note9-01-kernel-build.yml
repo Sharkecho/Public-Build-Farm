@@ -790,14 +790,14 @@ jobs:
             echo "gcc (uac2)     : $(grep -E '^GCC_VERSION=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2-)"
             echo "stock build s  : $(grep -E '^BUILD_SECONDS=' "${RESULTS}/stock/recipe.txt" | cut -d= -f2)"
             echo "uac2  build s  : $(grep -E '^BUILD_SECONDS=' "${RESULTS}/uac2/recipe.txt" | cut -d= -f2)"
-            echo "config delta   : CONFIG_DELTA_COUNT=1  SOURCE_DELTA_COUNT=0"
+            echo "config delta   : CONFIG_DELTA_COUNT=1 (one defconfig switch, CONFIG_USB_CONFIGFS_F_UAC2)  SOURCE_DELTA_COUNT=0  built .config changed lines=${CHANGED} (the switch plus the dependency it selects)"
             echo "host fix       : HOST_FIX_SCOPE=HOST_ONLY  HOSTCFLAGS = ${STOCK_HOSTCFLAGS:-n/a}"
             echo "host dtc       : stock=${STOCK_DTC:-n/a} uac2=${UAC2_DTC:-n/a}"
             echo "flag scope     : target_cc_lines stock=${STOCK_TGT_LINES:-n/a} uac2=${UAC2_TGT_LINES:-n/a}; target -fcommon hits stock=${STOCK_TGT_HITS:-n/a} uac2=${UAC2_TGT_HITS:-n/a}"
             echo "build mode     : ${STOCK_MODE:-n/a}  OFFICIAL_USES_O=NO  IN_TREE_BUILD stock=${STOCK_INTREE:-n/a} uac2=${UAC2_INTREE:-n/a}"
             echo "uh .incbin blob: init/uh.8g.elf sha256=${STOCK_UH_BLOB:-n/a} (static payload shipped in the archive)"
             echo "image safety   : the built Image is not published from this public farm (only size + sha256 are); PRIVATE_IMAGE_PERSISTENCE=PENDING"
-            echo "artefacts      : stock/Image stock/.config uac2/Image uac2/.config SHA256SUMS config.diff"
+            echo "artefacts      : published as text = SHA256SUMS config.diff config-delta.diff static-verification.txt stock-vs-uac2.txt build-report.txt plus build logs, recipes and markers; withheld = the built Image (size + sha256 only) and the resolved .config (sha256 + changed lines only)"
             echo "device writes  : 0 (this workflow cannot reach a device)"
           } > "${RESULTS}/build-report.txt"
           cat "${RESULTS}/build-report.txt"
@@ -882,7 +882,14 @@ jobs:
           # A run that fails early must still leave usable evidence behind: the failure
           # summary, the tail of the build log, the resolved .config and the hashes are
           # what make a blocker diagnosable without re-running the build.
-          for f in SUMMARY.txt markers.txt run-metadata.txt source-identity.txt uac2-dependencies.txt python-env.txt; do
+          #
+          # The three comparisons the K1 specification asks for are staged here too: a run
+          # that built both images and then failed the upload was one missing line in this
+          # loop away from publishing no verification text at all (run 36974962825 uploaded
+          # 15 files while the results directory held the comparison, the static verification
+          # and the build report).
+          for f in SUMMARY.txt markers.txt run-metadata.txt source-identity.txt uac2-dependencies.txt python-env.txt \
+                   static-verification.txt stock-vs-uac2.txt build-report.txt config.diff; do
             [ -f "${RESULTS}/${f}" ] && cp -f "${RESULTS}/${f}" evidence/
           done
           # Backfill from the recipe's own evidence directory when a phase died before it copied
@@ -900,7 +907,12 @@ jobs:
           for d in stock uac2; do
             [ -d "${RESULTS}/${d}" ] || continue
             mkdir -p "evidence/${d}"
-            for name in build.log build-tail.txt failure-summary.txt recipe.txt build-semantics.txt config.diff SHA256SUMS .config config-evidence.sha256; do
+            # .config is deliberately absent from this list even though the recipe leaves one in
+            # every phase directory: the resolved configuration is a derivative of the vendor
+            # defconfig, so only its sha256 (markers.txt) and the changed lines (config.diff,
+            # config-delta.diff) leave this public farm. upload-artifact would skip a dotfile
+            # anyway, so keeping it out of the allowlist keeps the published set honest.
+            for name in build.log build-tail.txt failure-summary.txt recipe.txt build-semantics.txt config.diff config-delta.diff SHA256SUMS config-evidence.sha256; do
               [ -f "${RESULTS}/${d}/${name}" ] && cp -f "${RESULTS}/${d}/${name}" "evidence/${d}/${name}"
             done
             # The built Image binaries are deliberately NOT uploaded: this is a PUBLIC
@@ -925,6 +937,7 @@ jobs:
           echo "EVIDENCE_FILES=$(find evidence -type f | wc -l)"
           echo "EVIDENCE_BYTES=$(du -sb evidence | awk '{print $1}')"
           echo "EVIDENCE_ALLOWLIST=PASS (logs, failure extracts, configs, metadata and hashes only)"
+          echo "PUBLIC_CONFIG_DUMP=WITHHELD (the resolved .config stays on the runner; its sha256 and the changed lines are published instead)"
           echo "PRIVATE_IMAGE_PERSISTENCE=PENDING (a public farm has no verified private artifact channel, so the built Image stays on the runner and only its size + sha256 are published)"
           find evidence -type f | sort
 
