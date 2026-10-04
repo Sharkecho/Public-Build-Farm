@@ -994,13 +994,15 @@ jobs:
           /usr/bin/tar --format=ustar --mode=0664 --owner=1000 --group=1000 --numeric-owner -C "$WORK" -cf "$TAR" boot.img.lz4
           # Odin expects the md5sum *text record* appended to the tar, not 16 raw digest bytes.
           # This is the same convention used by Samsung firmware .tar.md5 packages.
-          MD5="$(md5sum "$TAR" | awk '{print $1}')"
+          # Match GNU coreutils 'md5sum -t FILE >> FILE' exactly, which is the
+          # convention accepted by Odin3: one space between digest and filename.
           cp "$TAR" "$AP"
-          printf '%s  %s\n' "$MD5" "$(basename "$TAR")" >> "$AP"
-          # Consumer-style verification: split at the original tar size and re-hash exactly that payload.
+          MD5="$(md5sum "$AP" | awk '{print $1}')"
+          printf '%s %s\n' "$MD5" "$(basename "$AP")" >> "$AP"
+          # Consumer-style verification: hash exactly the bytes before the footer.
           TAR_BYTES="$(stat -c '%s' "$TAR")"
           [ "$(head -c "$TAR_BYTES" "$AP" | md5sum | awk '{print $1}')" = "$MD5" ]
-          tail -n 1 "$AP" | grep -Eq "^$MD5  AP\\.tar$"
+          tail -n 1 "$AP" | grep -Eq "^$MD5 NOTE9_UAC2_V2_N960N_ODIN_AP\\.tar\\.md5$"
           # Independent Odin-style verifier: parse the final md5sum text record,
           # hash exactly the tar payload before it, and require the expected archive entry.
           python3 - "$AP" <<'PY'
@@ -1012,7 +1014,7 @@ jobs:
 
           p = sys.argv[1]
           b = open(p, "rb").read()
-          m = re.search(rb"([0-9a-f]{32})  AP[.]tar" + bytes([10]) + rb"$", b)
+          m = re.search(rb"([0-9a-f]{32}) NOTE9_UAC2_V2_N960N_ODIN_AP[.]tar[.]md5" + bytes([10]) + rb"$", b)
           if not m:
               raise SystemExit("ODIN_MD5_VERIFY=FAIL footer")
           payload = b[:m.start()]
