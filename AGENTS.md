@@ -27,3 +27,13 @@ This repository is shared build infrastructure. The engineering control plane is
 5. Make minimal changes and validate only the affected path.
 6. Keep secrets/private source out of this public repository.
 7. A build task is complete only when its required artifact and verification gates pass.
+
+
+## CI-Fixer branch policy
+- Automated repair MUST start from the exact failing commit and use `ci-fix/<run-id>-<description>`.
+- Automated repair MUST NOT push directly to `main`.
+- Automated repair MUST NOT auto-merge.
+- Before PR delivery, compare the failing SHA with current `main`.
+- If `main` moved, rebase/update only when clean and rerun affected validation.
+- Any overlapping/semantic conflict => STOP with `NEEDS_HUMAN_REVIEW`; never guess.
+- PR merge requires human approval.
