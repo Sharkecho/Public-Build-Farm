@@ -1005,10 +1005,11 @@ jobs:
             _img="${RESULTS}/${d}/Image"
             [ -f "$_img" ] || continue
             echo "IMAGE ${d}: $(stat -c '%s' "$_img") bytes  sha256=$(sha256sum "$_img" | awk '{print $1}')"
-            if ! gh release create "$_tag" "$_img#${d}-Image" \
-                  --repo "$PRIVATE_REPO" \
-                  --title "Note9-01 kernel ${_tag} (${d})" \
-                  --notes "Built by the public build farm run ${GITHUB_RUN_ID} from note9-01@${{ inputs.source_ref }}. In-tree build, Samsung vendor toolchain. The same sha256 is recorded in that run's markers.txt." \
+            # The release was created by the AnyKernel3 upload above. Reuse that
+            # same private release for raw Images; creating the same tag again is
+            # invalid and was the actual run-37176261271 failure.
+            if ! gh release upload "$_tag" "$_img#${d}-Image" \
+                  --repo "$PRIVATE_REPO" --clobber \
                   >/dev/null 2>&1; then
               echo "IMAGE_PERSISTENCE=FAIL (could not upload the ${d} Image to ${PRIVATE_REPO} release ${_tag})"
               echo "  BUILD_FARM_SOURCE_TOKEN needs Contents:Write on ${PRIVATE_REPO}; Contents:Read-only can download the source but not publish."
