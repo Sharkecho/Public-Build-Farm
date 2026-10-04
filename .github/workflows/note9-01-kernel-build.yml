@@ -1001,117 +1001,34 @@ jobs:
           TAR_BYTES="$(stat -c '%s' "$TAR")"
           [ "$(head -c "$TAR_BYTES" "$AP" | md5sum | awk '{print $1}')" = "$MD5" ]
           tail -n 1 "$AP" | grep -Eq "^$MD5  AP\\.tar$"
-          # Independent Odin-style verifier: locate the final md5sum text record,
-          # hash exactly the tar payload before it, and require a readable ustar archive.
+          # Independent Odin-style verifier: parse the final md5sum text record,
+          # hash exactly the tar payload before it, and require the expected archive entry.
           python3 - "$AP" <<'PY'
-          import hashlib, re, sys, tarfile, io
-          p=sys.argv[1]; b=open(p,'rb').read()
-          m=re.search(rb'([0-9a-f]{32})  AP\.tar\n "${RESULTS}/v2/boot.img.lz4" "$AP" > "${RESULTS}/v2/SHA256SUMS"
-          echo "V2_ODIN_AP_BUILD=PASS"
-          cat "${RESULTS}/v2/SHA256SUMS"
+          import hashlib
+          import io
+          import re
+          import sys
+          import tarfile
 
-      - name: "phase 7b · persist Samsung-native V2 to PRIVATE release"
-        if: ${{ success() && inputs.build_mode != 'stock' }}
-        env:
-          GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
-          PRIVATE_REPO: Sharkecho/note9-01
-        run: |
-          set -euo pipefail
-          TAG="kernel-v2-$(date -u +%Y%m%dT%H%M%SZ)"
-          AP="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_ODIN_AP.tar.md5"
-          gh release create "$TAG" "$AP#NOTE9_UAC2_V2_N960N_ODIN_AP.tar.md5" "${RESULTS}/v2/SHA256SUMS#SHA256SUMS" --repo "$PRIVATE_REPO" --title "NEW VERIFIED BUILD — Note9 SM-N960N UAC2 V2 Odin AP" --notes "Samsung-native splice-only V2. Stock boot SHA256 pinned; only kernel bytes replaced; non-kernel bytes identical; SEANDROIDENFORCE retained; LZ4 round-trip verified. Build farm run ${GITHUB_RUN_ID}."
-          echo "V2_RELEASE_TAG=$TAG"
-          echo "V2_PRIVATE_PERSISTENCE=PASS"
-
-      - name: "phase 8 · upload build evidence"
-        if: ${{ success() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: note9-01-k1-uac2
-          path: evidence/
-          retention-days: 7
-          if-no-files-found: error
-          compression-level: 6
-
-      - name: "phase 8 (failure path) · upload failure evidence"
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: note9-01-k1-uac2-failure
-          path: evidence/
-          retention-days: 7
-          if-no-files-found: warn
-          compression-level: 6
-
-      - name: "cleanup · drop the source trees and the source archive from the runner"
-        if: ${{ always() }}
-        run: |
-          set -uo pipefail
-          rm -rf "${STOCK_SRC}" "${UAC2_SRC}" "${SOURCE_ARCHIVE}"
-          echo "CLEANUP=DONE (stock tree, uac2 tree and the source archive removed)"
-          df -h "$GITHUB_WORKSPACE" | tail -n 1 || true
-
-      - name: final markers
-        if: ${{ always() }}
-        run: |
-          set -uo pipefail
-          {
-            echo "RUN_ID=${GITHUB_RUN_ID}"
-            echo "RUN_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "RUNNER=${{ inputs.runner }}"
-            echo "BUILD_MODE=${{ inputs.build_mode }}"
-            echo "UAC2_DEPENDENCIES=$( [ -f "${RESULTS}/uac2-dependencies.txt" ] && echo PASS || echo NOT_RUN )"
-            echo "DEVICE_WRITES=0"
-            echo "K2_STARTED=NO"
-            for pair in "stock:STOCK" "uac2:UAC2"; do
-              dir="${pair%%:*}"; tag="${pair##*:}"
-              if [ -f "${RESULTS}/${dir}/Image" ]; then
-                echo "${tag}_IMAGE_SIZE=$(stat -c '%s' "${RESULTS}/${dir}/Image")"
-                echo "${tag}_IMAGE_SHA256=$(sha256sum "${RESULTS}/${dir}/Image" | awk '{print $1}')"
-              else
-                echo "${tag}_IMAGE_SIZE=absent"
-                echo "${tag}_IMAGE_SHA256=absent"
-              fi
-            done
-            if [ -f "${RESULTS}/markers.txt" ]; then
-              grep -E '^(UNEXPECTED_CONFIG_DRIFT|IMAGE_SIZE_DELTA|HOST_FIX_SCOPE|HOSTCFLAGS_EFFECTIVE|DTC_BUILD|TARGET_FCOMMON_HITS|TARGET_WHOLEFILE_FCOMMON_HITS|TARGET_CC_LINES|BUILT_CONFIG_F_UAC2|UAC2_CONFIG_VERIFIED|SAMSUNG_OFFICIAL_BUILD_MODE|OFFICIAL_USES_O|IN_TREE_BUILD|BUILD_COMMAND_USES_O|UH_BLOB_SHA256|STATIC_VERIFY)=' "${RESULTS}/markers.txt" || true
-            else
-              echo "UNEXPECTED_CONFIG_DRIFT=unknown (static verification did not run)"
-              echo "STATIC_VERIFY=NOT_REACHED"
-            fi
-            # Even when the run dies in phase 2 or 5, the log must carry the real failure
-            # text, the build semantics that were actually used, and the interpreter that was
-            # actually used (run 36970048474 died on a python interpreter mismatch).
-            if [ -f "${RESULTS}/python-env.txt" ]; then
-              echo "=== build interpreter ==="
-              cat "${RESULTS}/python-env.txt"
-            else
-              echo "PYTHON_IS_PY2=unknown (the prerequisites step did not record the interpreter)"
-            fi
-            for d in stock uac2; do
-              if [ -f "${RESULTS}/${d}/failure-summary.txt" ]; then
-                echo "=== ${d} failure summary ==="
-                cat "${RESULTS}/${d}/failure-summary.txt"
-              fi
-              if [ -f "${RESULTS}/${d}/build-semantics.txt" ]; then
-                echo "=== ${d} build semantics ==="
-                cat "${RESULTS}/${d}/build-semantics.txt"
-              fi
-            done
-            echo "SOURCE_INTEGRITY=$([ -f "${RESULTS}/source-identity.txt" ] && echo PASS || echo UNKNOWN)"
-          } | tee -a "${RESULTS}/SUMMARY.txt" || true
-          df -h "$GITHUB_WORKSPACE" | tail -n 1 || true
-, b)
-          if not m: raise SystemExit("ODIN_MD5_VERIFY=FAIL footer")
-          payload=b[:m.start()]
-          want=m.group(1).decode(); got=hashlib.md5(payload).hexdigest()
-          if got != want: raise SystemExit(f"ODIN_MD5_VERIFY=FAIL hash {got} != {want}")
-          with tarfile.open(fileobj=io.BytesIO(payload), mode='r:') as t:
-              names=t.getnames()
-              if names != ['boot.img.lz4']: raise SystemExit(f"ODIN_TAR_VERIFY=FAIL entries={names}")
-              ti=t.getmember('boot.img.lz4')
+          p = sys.argv[1]
+          b = open(p, "rb").read()
+          m = re.search(rb"([0-9a-f]{32})  AP[.]tar" + bytes([10]) + rb"$", b)
+          if not m:
+              raise SystemExit("ODIN_MD5_VERIFY=FAIL footer")
+          payload = b[:m.start()]
+          want = m.group(1).decode()
+          got = hashlib.md5(payload).hexdigest()
+          if got != want:
+              raise SystemExit(f"ODIN_MD5_VERIFY=FAIL hash {got} != {want}")
+          with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as t:
+              names = t.getnames()
+              if names != ["boot.img.lz4"]:
+                  raise SystemExit(f"ODIN_TAR_VERIFY=FAIL entries={names}")
+              ti = t.getmember("boot.img.lz4")
               if ti.uid != 1000 or ti.gid != 1000 or (ti.mode & 0o7777) != 0o664:
-                  raise SystemExit(f"ODIN_TAR_VERIFY=FAIL metadata uid={ti.uid} gid={ti.gid} mode={oct(ti.mode)}")
+                  raise SystemExit(
+                      f"ODIN_TAR_VERIFY=FAIL metadata uid={ti.uid} gid={ti.gid} mode={oct(ti.mode)}"
+                  )
           print("ODIN_MD5_VERIFY=PASS")
           print("ODIN_TAR_VERIFY=PASS")
           PY
