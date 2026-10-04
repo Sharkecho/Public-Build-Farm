@@ -941,72 +941,24 @@ jobs:
           echo "PRIVATE_IMAGE_PERSISTENCE=PENDING (a public farm has no verified private artifact channel, so the built Image stays on the runner and only its size + sha256 are published)"
           find evidence -type f | sort
 
-      - name: "phase 7a · build the flashable Odin AP package"
+      - name: "phase 7a · build the AnyKernel3 recovery package"
         if: ${{ success() && inputs.build_mode != 'stock' }}
-        env:
-          GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
-          PRIVATE_REPO: Sharkecho/note9-01
         run: |
           set -uo pipefail
-          # A compiled kernel is NOT flashable. The phone's boot PARTITION is a boot.img
-          # (Android boot image: header + kernel + ramdisk), and Odin's AP slot takes a
-          # .tar / .tar.md5 package — it cannot read a bare .img at all. The chain is:
-          #
-          #     Image -> (splice into stock boot.img) -> boot.img -> tar -> +md5 -> AP.tar.md5
-          #
-          # The splice reuses the OFFICIAL boot.img as the template. Renaming the Image
-          # to boot.img, or writing it directly, would lose the ramdisk and every offset
-          # in the header — an unbootable phone. The official image lives as a release
-          # asset on the private repository (tag stock-boot-template) precisely so the
-          # build can be reproduced without a Windows workstation.
-          _tmpl_asset="stock-boot-N960NKSU3FVG4.img"
-          _tmpl_sha="a1c2fbd231d4fd6d6265bb1702b18fe9f1a461b80dd747ced32558dddfbe012f"
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "ODIN_PACKAGE=FAIL (BUILD_FARM_SOURCE_TOKEN is not available to this job)"
-            exit 1
-          fi
-          mkdir -p "${RESULTS}/odin"
-          if ! gh release download stock-boot-template \
-                --repo "$PRIVATE_REPO" --pattern "$_tmpl_asset" \
-                --dir "${RESULTS}/odin" --clobber >/dev/null 2>&1; then
-            echo "ODIN_PACKAGE=FAIL (could not fetch the stock boot.img template from ${PRIVATE_REPO} release stock-boot-template)"
-            exit 1
-          fi
-          _got="$(sha256sum "${RESULTS}/odin/${_tmpl_asset}" | awk '{print $1}')"
-          if [ "$_got" != "$_tmpl_sha" ]; then
-            echo "ODIN_PACKAGE=FAIL (template sha256 is ${_got}, expected ${_tmpl_sha})"
-            exit 1
-          fi
-          echo "TEMPLATE_SHA256=${_got}"
-          mv "${RESULTS}/odin/${_tmpl_asset}" "${RESULTS}/odin/stock-boot.img"
-
-          # The packaging logic lives in the private repository (one implementation,
-          # testable on a workstation) and is executed here, not duplicated as inline
-          # shell — an inline copy would be free to drift from the tested one.
-          _script="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/scripts/make_odin_ap.sh"
-          if [ ! -f "$_script" ]; then
-            echo "ODIN_PACKAGE=FAIL (packaging script missing at ${_script})"
-            exit 1
-          fi
-          if ! bash "$_script" \
-                --image "${RESULTS}/uac2/Image" \
-                --template "${RESULTS}/odin/stock-boot.img" \
-                --out "${RESULTS}/odin/AP_UAC2_N960NKSU3FVG4.tar.md5" \
-                --label UAC2; then
-            echo "ODIN_PACKAGE=FAIL (make_odin_ap.sh refused the package; the markers above say why)"
-            exit 1
-          fi
-          # The rollback package is the untouched factory image: same tar+md5 shape,
-          # proven on hardware to be the thing that puts the device back.
-          if ! bash "$_script" \
-                --image "${RESULTS}/stock/Image" \
-                --template "${RESULTS}/odin/stock-boot.img" \
-                --out "${RESULTS}/odin/AP_STOCK_ROLLBACK_N960NKSU3FVG4.tar.md5" \
-                --label STOCK_ROLLBACK; then
-            echo "ODIN_PACKAGE=FAIL (rollback package build refused)"
-            exit 1
-          fi
-          echo "ODIN_PACKAGE=PASS"
+          # Standard custom-kernel delivery path: Samsung vendor Kbuild produces
+          # arch/arm64/boot/Image; AnyKernel3 reads the device's existing boot
+          # partition, replaces only the kernel payload, repacks with magiskboot,
+          # and writes it back. No hand-built boot.img/LZ4/Odin TAR is created.
+          mkdir -p "${RESULTS}/anykernel3"
+          _script="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/scripts/make_anykernel3.sh"
+          [ -f "$_script" ] || { echo "AK3_PACKAGE=FAIL (missing $_script)"; exit 1; }
+          bash "$_script" \
+            --image "${RESULTS}/uac2/Image" \
+            --out "${GITHUB_WORKSPACE}/${RESULTS}/anykernel3/NOTE9_UAC2_ANYKERNEL3_N960N.zip" \
+            --name "Note9-01 UAC2"
+          sha256sum "${RESULTS}/anykernel3/NOTE9_UAC2_ANYKERNEL3_N960N.zip" \
+            > "${RESULTS}/anykernel3/NOTE9_UAC2_ANYKERNEL3_N960N.zip.sha256"
+          echo "AK3_PACKAGE=PASS"
 
       - name: "phase 7b · persist the built Image to the PRIVATE source release"
         if: ${{ success() }}
@@ -1031,16 +983,16 @@ jobs:
           fi
           _tag="kernel-$(date -u +%Y%m%dT%H%M%SZ)"
           _published=0
-          # The flashable artefacts come first: an Odin AP package is what the owner
-          # actually puts on the device, the bare Image is only the kernel binary.
-          for f in "${RESULTS}"/odin/*.tar.md5; do
+          # The flashable artefact comes first: AnyKernel3 preserves the existing
+          # stock boot structure and replaces only the compiled kernel payload.
+          for f in "${RESULTS}"/anykernel3/*.zip; do
             [ -f "$f" ] || continue
             _base="$(basename "$f")"
             echo "PACKAGE ${_base}: $(stat -c '%s' "$f") bytes  sha256=$(sha256sum "$f" | awk '{print $1}')"
             if ! gh release create "$_tag" "$f#${_base}" \
                   --repo "$PRIVATE_REPO" \
                   --title "Note9-01 kernel ${_tag} (${_base})" \
-                  --notes "Odin AP package built by the public build farm run ${GITHUB_RUN_ID}. Load into Odin's AP slot only; leave BL/CP/CSC empty. Re-Partition and NAND Erase must stay off." \
+                  --notes "AnyKernel3 package built by the public build farm run ${GITHUB_RUN_ID}. Recovery-flashable custom kernel package for SM-N960N/crownlteks; it preserves the existing boot image structure and replaces only the kernel payload." \
                   >/dev/null 2>&1; then
               echo "IMAGE_PERSISTENCE=FAIL (could not upload ${_base} to ${PRIVATE_REPO} release ${_tag})"
               echo "  BUILD_FARM_SOURCE_TOKEN needs Contents:Write on ${PRIVATE_REPO}."
