@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   intake:
-    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    if: ${{ contains(fromJSON('["failure","timed_out","action_required"]'), github.event.workflow_run.conclusion) }}
     runs-on: ubuntu-22.04
     steps:
       - name: Create CI failure intake issue
