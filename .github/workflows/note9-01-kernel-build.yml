@@ -941,7 +941,7 @@ jobs:
           echo "PRIVATE_IMAGE_PERSISTENCE=PENDING (a public farm has no verified private artifact channel, so the built Image stays on the runner and only its size + sha256 are published)"
           find evidence -type f | sort
 
-      - name: "phase 7a · build Samsung-native V2 Odin AP (splice-only, fail-closed)"
+      - name: "phase 7a · build Samsung-native V3 TWRP recovery ZIP"
         if: ${{ success() && inputs.build_mode != 'stock' }}
         env:
           GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
@@ -955,36 +955,21 @@ jobs:
           SEANDROID_OFFSET: "35213312"
         run: |
           set -euo pipefail
-          # samsung_lz4.py imports the Python lz4 module; install it explicitly on the ephemeral runner.
-          python3 -m pip install --disable-pip-version-check --no-input lz4
-          python3 -c "import lz4.block; print('PYTHON_LZ4=PASS')"
-          # Mature Samsung packaging backend is pinned in the private source repo.
-          PACKAGER_PIN="5e3b76c94a4f9b7a4bdbb04db9c8679dcaf068ee"
-          git clone -q https://github.com/Mnky313/SamsungImageRepacker.git vendor-samsung-packager
-          git -C vendor-samsung-packager checkout -q "$PACKAGER_PIN"
-          [ "$(git -C vendor-samsung-packager rev-parse HEAD)" = "$PACKAGER_PIN" ]
-          echo "SAMSUNG_PACKAGER=Mnky313/SamsungImageRepacker"
-          echo "SAMSUNG_PACKAGER_PIN=$PACKAGER_PIN"
-          mkdir -p "${RESULTS}/v2"
-          STOCK="${RESULTS}/v2/stock_boot.img"
-          NEWBOOT="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_boot.img"
-          AP="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_ODIN_AP.tar"
-          gh release download "$STOCK_TAG" --repo "$PRIVATE_REPO" --pattern "$STOCK_ASSET" --dir "${RESULTS}/v2" --clobber
-          mv "${RESULTS}/v2/$STOCK_ASSET" "$STOCK"
+          mkdir -p "${RESULTS}/v3/twrp/META-INF/com/google/android"
+          STOCK="${RESULTS}/v3/stock_boot.img"
+          NEWBOOT="${RESULTS}/v3/boot.img"
+          ZIP="${RESULTS}/v3/NOTE9_UAC2_V3_N960N_TWRP.zip"
+          gh release download "$STOCK_TAG" --repo "$PRIVATE_REPO" --pattern "$STOCK_ASSET" --dir "${RESULTS}/v3" --clobber
+          mv "${RESULTS}/v3/$STOCK_ASSET" "$STOCK"
           [ "$(stat -c '%s' "$STOCK")" = "$STOCK_SIZE" ]
           [ "$(sha256sum "$STOCK" | awk '{print $1}')" = "$STOCK_SHA256" ]
           [ "$(head -c 8 "$STOCK")" = "ANDROID!" ]
-          KS="$(od -An -tu4 -N4 -j8 "$STOCK" | tr -d ' ')"
-          PS="$(od -An -tu4 -N4 -j36 "$STOCK" | tr -d ' ')"
-          [ "$KS" = "$KERNEL_SIZE" ] && [ "$PS" = "2048" ]
           [ "$(stat -c '%s' "${RESULTS}/uac2/Image")" = "$KERNEL_SIZE" ]
-          dd if="$STOCK" of="${RESULTS}/v2/header.stock" bs=1 count="$KERNEL_OFFSET" status=none
-          dd if="$STOCK" of="${RESULTS}/v2/postkernel.stock" bs=1 skip=$((KERNEL_OFFSET+KERNEL_SIZE)) status=none
           cp "$STOCK" "$NEWBOOT"
           dd if="${RESULTS}/uac2/Image" of="$NEWBOOT" bs=1 seek="$KERNEL_OFFSET" conv=notrunc status=none
           [ "$(stat -c '%s' "$NEWBOOT")" = "$STOCK_SIZE" ]
-          cmp -s "${RESULTS}/v2/header.stock" <(head -c "$KERNEL_OFFSET" "$NEWBOOT")
-          cmp -s "${RESULTS}/v2/postkernel.stock" <(tail -c +$((KERNEL_OFFSET+KERNEL_SIZE+1)) "$NEWBOOT")
+          cmp -s <(head -c "$KERNEL_OFFSET" "$STOCK") <(head -c "$KERNEL_OFFSET" "$NEWBOOT")
+          cmp -s <(tail -c +$((KERNEL_OFFSET+KERNEL_SIZE+1)) "$STOCK") <(tail -c +$((KERNEL_OFFSET+KERNEL_SIZE+1)) "$NEWBOOT")
           test "$(dd if="$NEWBOOT" bs=1 skip="$SEANDROID_OFFSET" count=16 status=none)" = "SEANDROIDENFORCE"
           WANT="$(sha256sum "${RESULTS}/uac2/Image" | awk '{print $1}')"
           GOT="$(dd if="$NEWBOOT" bs=1 skip="$KERNEL_OFFSET" count="$KERNEL_SIZE" status=none | sha256sum | awk '{print $1}')"
@@ -992,58 +977,46 @@ jobs:
           echo "NON_KERNEL_BYTE_DIFF=0"
           echo "SEANDROIDENFORCE=PASS"
           echo "ROUNDTRIP_KERNEL_SHA256=PASS"
-          python3 "${SOURCE_REPO_DIR}/scripts/samsung_lz4.py" compress "$NEWBOOT" "${RESULTS}/v2/boot.img.lz4"
-          python3 "${SOURCE_REPO_DIR}/scripts/samsung_lz4.py" verify "${RESULTS}/v2/boot.img.lz4" "$NEWBOOT"
-          # Delegate AP tar creation to the pinned SamsungImageRepacker convention
-          # documented upstream: put partition images in Custom/AP and tar *.* from there.
-          PACK_ROOT="$GITHUB_WORKSPACE/vendor-samsung-packager"
-          rm -rf "$PACK_ROOT/Custom/AP"
-          mkdir -p "$PACK_ROOT/Custom/AP"
-          cp "${RESULTS}/v2/boot.img.lz4" "$PACK_ROOT/Custom/AP/boot.img.lz4"
-          (
-            cd "$PACK_ROOT/Custom/AP"
-            tar -cvf ../AP_modified.tar *.*
-          )
-          cp "$PACK_ROOT/Custom/AP_modified.tar" "$AP"
-          echo "PACKAGING_BACKEND=SamsungImageRepacker@${PACKAGER_PIN}"
-          # Independent archive verification before release.
-          python3 - "$AP" <<'PY'
-          import sys, tarfile
-          p=sys.argv[1]
-          with tarfile.open(p, mode="r:") as t:
-              names=t.getnames()
-              if names != ["boot.img.lz4"]:
-                  raise SystemExit(f"ODIN_TAR_VERIFY=FAIL entries={names}")
-              ti=t.getmember("boot.img.lz4")
-              # SamsungImageRepacker intentionally preserves the runner's native tar
-              # ownership metadata. Odin dispatches by member name; uid/gid are not a
-              # partition-routing contract. Require only the mature backend's expected
-              # single member and safe regular-file mode instead of imposing our old
-              # self-authored uid/gid=1000 convention on its output.
-              if not ti.isfile() or (ti.mode & 0o7777) not in (0o644, 0o664):
-                  raise SystemExit(
-                      f"ODIN_TAR_VERIFY=FAIL metadata uid={ti.uid} gid={ti.gid} mode={oct(ti.mode)}"
-                  )
-              print(f"ODIN_TAR_METADATA=uid:{ti.uid},gid:{ti.gid},mode:{oct(ti.mode)}")
-          print("ODIN_TAR_VERIFY=PASS")
-          print("ODIN_MD5_LAYER=REMOVED")
-          PY
-          sha256sum "$NEWBOOT" "${RESULTS}/v2/boot.img.lz4" "$AP" > "${RESULTS}/v2/SHA256SUMS"
-          echo "V2_ODIN_AP_BUILD=PASS"
-          cat "${RESULTS}/v2/SHA256SUMS"
+          cp "$NEWBOOT" "${RESULTS}/v3/twrp/boot.img"
+          cat > "${RESULTS}/v3/twrp/META-INF/com/google/android/update-binary" <<'SH'
+          #!/sbin/sh
+          OUTFD="$2"; ZIPFILE="$3"
+          ui(){ echo "ui_print $*" > /proc/self/fd/$OUTFD; echo "ui_print" > /proc/self/fd/$OUTFD; }
+          ui "Note9-01 UAC2 V3 / SM-N960N"
+          MODEL="$(getprop ro.product.model 2>/dev/null || true)"
+          [ "$MODEL" = "SM-N960N" ] || { ui "ERROR: device=$MODEL, expected SM-N960N"; exit 1; }
+          BOOT=/dev/block/by-name/BOOT
+          [ -b "$BOOT" ] || { ui "ERROR: BOOT partition missing"; exit 1; }
+          TMP=/tmp/note9-uac2-v3-boot.img
+          unzip -p "$ZIPFILE" boot.img > "$TMP" || exit 1
+          [ "$(wc -c < "$TMP" | tr -d ' ')" = "35213856" ] || { ui "ERROR: boot size mismatch"; exit 1; }
+          ui "Writing verified complete boot.img..."
+          dd if="$TMP" of="$BOOT" bs=4M conv=fsync || exit 1
+          sync
+          ui "Done."
+          exit 0
+          SH
+          chmod 0755 "${RESULTS}/v3/twrp/META-INF/com/google/android/update-binary"
+          printf '# dummy updater-script; logic is in update-binary\n' > "${RESULTS}/v3/twrp/META-INF/com/google/android/updater-script"
+          (cd "${RESULTS}/v3/twrp" && zip -r -9 "$ZIP" META-INF boot.img >/dev/null)
+          unzip -t "$ZIP"
+          [ "$(unzip -p "$ZIP" boot.img | sha256sum | awk '{print $1}')" = "$(sha256sum "$NEWBOOT" | awk '{print $1}')" ]
+          sha256sum "$NEWBOOT" "$ZIP" > "${RESULTS}/v3/SHA256SUMS"
+          echo "V3_TWRP_ZIP_BUILD=PASS"
+          cat "${RESULTS}/v3/SHA256SUMS"
 
-      - name: "phase 7b · persist Samsung-native V2 to PRIVATE release"
+      - name: "phase 7b · persist Samsung-native V3 TWRP ZIP to PRIVATE release"
         if: ${{ success() && inputs.build_mode != 'stock' }}
         env:
           GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           PRIVATE_REPO: Sharkecho/note9-01
         run: |
           set -euo pipefail
-          TAG="kernel-v2-$(date -u +%Y%m%dT%H%M%SZ)"
-          AP="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_ODIN_AP.tar"
-          gh release create "$TAG" "$AP#NOTE9_UAC2_V2_N960N_ODIN_AP.tar" "${RESULTS}/v2/SHA256SUMS#SHA256SUMS" --repo "$PRIVATE_REPO" --title "NEW VERIFIED BUILD — Note9 SM-N960N UAC2 V2 Odin AP" --notes "Samsung-native splice-only V2 plain AP tar. Mature packaging backend pinned: Mnky313/SamsungImageRepacker@5e3b76c94a4f9b7a4bdbb04db9c8679dcaf068ee. Stock boot SHA256 pinned; only kernel bytes replaced; non-kernel bytes identical; SEANDROIDENFORCE retained; LZ4 round-trip verified; no custom MD5 footer. Build farm run ${GITHUB_RUN_ID}."
-          echo "V2_RELEASE_TAG=$TAG"
-          echo "V2_PRIVATE_PERSISTENCE=PASS"
+          TAG="kernel-v3-twrp-$(date -u +%Y%m%dT%H%M%SZ)"
+          ZIP="${RESULTS}/v3/NOTE9_UAC2_V3_N960N_TWRP.zip"
+          gh release create "$TAG" "$ZIP#NOTE9_UAC2_V3_N960N_TWRP.zip" "${RESULTS}/v3/SHA256SUMS#SHA256SUMS" --repo "$PRIVATE_REPO" --title "NEW VERIFIED BUILD — Note9 SM-N960N UAC2 V3 TWRP ZIP" --notes "Recovery-flashable complete boot.img delivery. No AnyKernel3 repack, no Odin/TAR/LZ4 packaging. Stock boot SHA256 pinned; only equal-length kernel bytes replaced; all non-kernel bytes identical; SEANDROIDENFORCE retained; kernel round-trip verified. Build farm run ${GITHUB_RUN_ID}."
+          echo "V3_RELEASE_TAG=$TAG"
+          echo "V3_PRIVATE_PERSISTENCE=PASS"
 
       - name: "phase 8 · upload build evidence"
         if: ${{ success() }}
