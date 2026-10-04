@@ -989,7 +989,9 @@ jobs:
           python3 "${SOURCE_REPO_DIR}/scripts/samsung_lz4.py" verify "${RESULTS}/v2/boot.img.lz4" "$NEWBOOT"
           WORK="${RESULTS}/v2/tarstage"; mkdir -p "$WORK"; cp "${RESULTS}/v2/boot.img.lz4" "$WORK/boot.img.lz4"
           TAR="${RESULTS}/v2/AP.tar"
-          tar --format=ustar --mode=0664 --owner=1000 --group=1000 --uname=dpi --gname=dpi -C "$WORK" -cf "$TAR" boot.img.lz4
+          # bsdtar on ubuntu-22.04 does not support GNU tar's --uname/--gname options.
+          # Use GNU tar explicitly; numeric uid/gid and ustar are the compatibility-critical fields.
+          /usr/bin/tar --format=ustar --mode=0664 --owner=1000 --group=1000 --numeric-owner -C "$WORK" -cf "$TAR" boot.img.lz4
           MD5="$(md5sum "$TAR" | awk '{print $1}')"
           cp "$TAR" "$AP"; printf '%s' "$MD5" | xxd -r -p >> "$AP"
           PAYLOAD=$(( $(stat -c '%s' "$AP") - 16 ))
