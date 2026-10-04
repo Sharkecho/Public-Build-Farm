@@ -76,19 +76,64 @@ jobs:
           EOF
 
       - name: Sync source
+        id: sync
         working-directory: lineage
+        shell: bash
         run: |
-          # First sync only the Note9-specific trees. This makes any device-tree/ref failure explicit.
-          repo sync -c --force-sync --no-clone-bundle --no-tags -j4 \
+          set +e
+          mkdir -p "$GITHUB_WORKSPACE/diagnostics"
+          LOG="$GITHUB_WORKSPACE/diagnostics/sync.log"
+          {
+            echo "=== PRE-SYNC DISK ==="
+            df -h
+            echo "=== RESOLVED MANIFEST ==="
+            repo manifest -r
+            echo "=== NOTE9 TREES ==="
+          } > "$LOG" 2>&1
+
+          repo sync -c --force-sync --no-clone-bundle --no-tags --fail-fast -j4 \
             device/samsung/crownlte \
             device/samsung/exynos9810-common \
             kernel/samsung/exynos9810 \
             device/samsung_slsi/sepolicy \
-            hardware/samsung
-          # Then sync the platform manifest.
-          repo sync -c --force-sync --no-clone-bundle --no-tags -j4
+            hardware/samsung 2>&1 | tee -a "$LOG"
+          NOTE9_RC=${PIPESTATUS[0]}
+          echo "NOTE9_SYNC_RC=$NOTE9_RC" | tee -a "$LOG"
+
+          FULL_RC=99
+          if [ "$NOTE9_RC" -eq 0 ]; then
+            for attempt in 1 2; do
+              echo "=== FULL SYNC ATTEMPT $attempt/2 ===" | tee -a "$LOG"
+              repo sync -c --force-sync --no-clone-bundle --no-tags --fail-fast -j4 2>&1 | tee -a "$LOG"
+              FULL_RC=${PIPESTATUS[0]}
+              echo "FULL_SYNC_ATTEMPT_$attempt_RC=$FULL_RC" | tee -a "$LOG"
+              [ "$FULL_RC" -eq 0 ] && break
+              sleep 15
+            done
+          fi
+
+          {
+            echo "=== POST-SYNC DISK ==="
+            df -h
+            echo "=== ERROR SUMMARY ==="
+            grep -Ei 'fatal:|error:|failed|no space left|cannot|could not|timed out|connection reset|http [45][0-9][0-9]' "$LOG" | tail -n 300 || true
+          } | tee -a "$GITHUB_WORKSPACE/diagnostics/summary.log"
+
+          printf 'NOTE9_SYNC_RC=%s\nFULL_SYNC_RC=%s\n' "$NOTE9_RC" "$FULL_RC" > "$GITHUB_WORKSPACE/diagnostics/result.env"
+          if [ "$NOTE9_RC" -ne 0 ] || [ "$FULL_RC" -ne 0 ]; then
+            exit 1
+          fi
           repo status
           df -h
+
+      - name: Upload sync diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-lineage20-sync-diagnostics-${{ github.run_id }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Proprietary blob gate
         working-directory: lineage
