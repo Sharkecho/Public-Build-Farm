@@ -941,89 +941,72 @@ jobs:
           echo "PRIVATE_IMAGE_PERSISTENCE=PENDING (a public farm has no verified private artifact channel, so the built Image stays on the runner and only its size + sha256 are published)"
           find evidence -type f | sort
 
-      - name: "phase 7a · build the AnyKernel3 recovery package"
+      - name: "phase 7a · build Samsung-native V2 Odin AP (splice-only, fail-closed)"
         if: ${{ success() && inputs.build_mode != 'stock' }}
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          PRIVATE_REPO: Sharkecho/note9-01
+          STOCK_TAG: stock-boot-N960NKSU3FVG4
+          STOCK_ASSET: N960NKSU3FVG4_SM-N960N_STOCK_BOOT.img
+          STOCK_SHA256: a1c2fbd231d4fd6d6265bb1702b18fe9f1a461b80dd747ced32558dddfbe012f
+          STOCK_SIZE: "35213856"
+          KERNEL_SIZE: "31846408"
+          KERNEL_OFFSET: "2048"
+          SEANDROID_OFFSET: "35213312"
         run: |
-          set -uo pipefail
-          # Standard custom-kernel delivery path: Samsung vendor Kbuild produces
-          # arch/arm64/boot/Image; AnyKernel3 reads the device's existing boot
-          # partition, replaces only the kernel payload, repacks with magiskboot,
-          # and writes it back. No hand-built boot.img/LZ4/Odin TAR is created.
-          mkdir -p "${RESULTS}/anykernel3"
-          _script="${GITHUB_WORKSPACE}/${SOURCE_REPO_DIR}/scripts/make_anykernel3.sh"
-          [ -f "$_script" ] || { echo "AK3_PACKAGE=FAIL (missing $_script)"; exit 1; }
-          bash "$_script" \
-            --image "${RESULTS}/uac2/Image" \
-            --out "${GITHUB_WORKSPACE}/${RESULTS}/anykernel3/NOTE9_UAC2_ANYKERNEL3_N960N.zip" \
-            --name "Note9-01 UAC2"
-          sha256sum "${RESULTS}/anykernel3/NOTE9_UAC2_ANYKERNEL3_N960N.zip" \
-            > "${RESULTS}/anykernel3/NOTE9_UAC2_ANYKERNEL3_N960N.zip.sha256"
-          echo "AK3_PACKAGE=PASS"
+          set -euo pipefail
+          mkdir -p "${RESULTS}/v2"
+          STOCK="${RESULTS}/v2/stock_boot.img"
+          NEWBOOT="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_boot.img"
+          AP="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_ODIN_AP.tar.md5"
+          gh release download "$STOCK_TAG" --repo "$PRIVATE_REPO" --pattern "$STOCK_ASSET" --dir "${RESULTS}/v2" --clobber
+          mv "${RESULTS}/v2/$STOCK_ASSET" "$STOCK"
+          [ "$(stat -c '%s' "$STOCK")" = "$STOCK_SIZE" ]
+          [ "$(sha256sum "$STOCK" | awk '{print $1}')" = "$STOCK_SHA256" ]
+          [ "$(head -c 8 "$STOCK")" = "ANDROID!" ]
+          KS="$(od -An -tu4 -N4 -j8 "$STOCK" | tr -d ' ')"
+          PS="$(od -An -tu4 -N4 -j36 "$STOCK" | tr -d ' ')"
+          [ "$KS" = "$KERNEL_SIZE" ] && [ "$PS" = "2048" ]
+          [ "$(stat -c '%s' "${RESULTS}/uac2/Image")" = "$KERNEL_SIZE" ]
+          dd if="$STOCK" of="${RESULTS}/v2/header.stock" bs=1 count="$KERNEL_OFFSET" status=none
+          dd if="$STOCK" of="${RESULTS}/v2/postkernel.stock" bs=1 skip=$((KERNEL_OFFSET+KERNEL_SIZE)) status=none
+          cp "$STOCK" "$NEWBOOT"
+          dd if="${RESULTS}/uac2/Image" of="$NEWBOOT" bs=1 seek="$KERNEL_OFFSET" conv=notrunc status=none
+          [ "$(stat -c '%s' "$NEWBOOT")" = "$STOCK_SIZE" ]
+          cmp -s "${RESULTS}/v2/header.stock" <(head -c "$KERNEL_OFFSET" "$NEWBOOT")
+          cmp -s "${RESULTS}/v2/postkernel.stock" <(tail -c +$((KERNEL_OFFSET+KERNEL_SIZE+1)) "$NEWBOOT")
+          test "$(dd if="$NEWBOOT" bs=1 skip="$SEANDROID_OFFSET" count=16 status=none)" = "SEANDROIDENFORCE"
+          WANT="$(sha256sum "${RESULTS}/uac2/Image" | awk '{print $1}')"
+          GOT="$(dd if="$NEWBOOT" bs=1 skip="$KERNEL_OFFSET" count="$KERNEL_SIZE" status=none | sha256sum | awk '{print $1}')"
+          [ "$WANT" = "$GOT" ]
+          echo "NON_KERNEL_BYTE_DIFF=0"
+          echo "SEANDROIDENFORCE=PASS"
+          echo "ROUNDTRIP_KERNEL_SHA256=PASS"
+          python3 "${SOURCE_REPO_DIR}/scripts/samsung_lz4.py" compress "$NEWBOOT" "${RESULTS}/v2/boot.img.lz4"
+          python3 "${SOURCE_REPO_DIR}/scripts/samsung_lz4.py" verify "${RESULTS}/v2/boot.img.lz4" "$NEWBOOT"
+          WORK="${RESULTS}/v2/tarstage"; mkdir -p "$WORK"; cp "${RESULTS}/v2/boot.img.lz4" "$WORK/boot.img.lz4"
+          TAR="${RESULTS}/v2/AP.tar"
+          tar --format=ustar --mode=0664 --owner=1000 --group=1000 --uname=dpi --gname=dpi -C "$WORK" -cf "$TAR" boot.img.lz4
+          MD5="$(md5sum "$TAR" | awk '{print $1}')"
+          cp "$TAR" "$AP"; printf '%s' "$MD5" | xxd -r -p >> "$AP"
+          PAYLOAD=$(( $(stat -c '%s' "$AP") - 16 ))
+          [ "$(head -c "$PAYLOAD" "$AP" | md5sum | awk '{print $1}')" = "$(tail -c 16 "$AP" | xxd -p | tr -d '\n')" ]
+          sha256sum "$NEWBOOT" "${RESULTS}/v2/boot.img.lz4" "$AP" > "${RESULTS}/v2/SHA256SUMS"
+          echo "V2_ODIN_AP_BUILD=PASS"
+          cat "${RESULTS}/v2/SHA256SUMS"
 
-      - name: "phase 7b · persist the built Image to the PRIVATE source release"
-        if: ${{ success() }}
+      - name: "phase 7b · persist Samsung-native V2 to PRIVATE release"
+        if: ${{ success() && inputs.build_mode != 'stock' }}
         env:
           GH_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           PRIVATE_REPO: Sharkecho/note9-01
         run: |
-          set -uo pipefail
-          # The Image is a derivative of proprietary Samsung source, so this public build
-          # host must never publish a release under its own name. It is still worthless to
-          # the owner if the binary dies with the runner: the only sha256 that leaves tells
-          # you the build was real, not what to flash. The private source repository is the
-          # one place that may legally hold it, so the Image goes there and nowhere else.
-          #
-          # Fail closed. A read-only or absent token must NOT be smoothed over into a
-          # "build succeeded" line: the entire point of this step is that a flashable
-          # artefact exists afterwards, and a run that cannot deliver one has not done
-          # its job even when both kernels compiled.
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "IMAGE_PERSISTENCE=FAIL (BUILD_FARM_SOURCE_TOKEN is not available to this job)"
-            exit 1
-          fi
-          _tag="kernel-$(date -u +%Y%m%dT%H%M%SZ)"
-          _published=0
-          # The flashable artefact comes first: AnyKernel3 preserves the existing
-          # stock boot structure and replaces only the compiled kernel payload.
-          for f in "${RESULTS}"/anykernel3/*.zip; do
-            [ -f "$f" ] || continue
-            _base="$(basename "$f")"
-            echo "PACKAGE ${_base}: $(stat -c '%s' "$f") bytes  sha256=$(sha256sum "$f" | awk '{print $1}')"
-            if ! gh release create "$_tag" "$f#${_base}" \
-                  --repo "$PRIVATE_REPO" \
-                  --title "Note9-01 kernel ${_tag} (${_base})" \
-                  --notes "AnyKernel3 package built by the public build farm run ${GITHUB_RUN_ID}. Recovery-flashable custom kernel package for SM-N960N/crownlteks; it preserves the existing boot image structure and replaces only the kernel payload." \
-                  >/dev/null 2>&1; then
-              echo "IMAGE_PERSISTENCE=FAIL (could not upload ${_base} to ${PRIVATE_REPO} release ${_tag})"
-              echo "  BUILD_FARM_SOURCE_TOKEN needs Contents:Write on ${PRIVATE_REPO}."
-              exit 1
-            fi
-            _published=$((_published + 1))
-            echo "IMAGE_PERSISTENCE=UPLOADED ${_base} -> ${PRIVATE_REPO} release ${_tag}"
-          done
-          for d in stock uac2; do
-            _img="${RESULTS}/${d}/Image"
-            [ -f "$_img" ] || continue
-            echo "IMAGE ${d}: $(stat -c '%s' "$_img") bytes  sha256=$(sha256sum "$_img" | awk '{print $1}')"
-            # The release was created by the AnyKernel3 upload above. Reuse that
-            # same private release for raw Images; creating the same tag again is
-            # invalid and was the actual run-37176261271 failure.
-            if ! gh release upload "$_tag" "$_img#${d}-Image" \
-                  --repo "$PRIVATE_REPO" --clobber \
-                  >/dev/null 2>&1; then
-              echo "IMAGE_PERSISTENCE=FAIL (could not upload the ${d} Image to ${PRIVATE_REPO} release ${_tag})"
-              echo "  BUILD_FARM_SOURCE_TOKEN needs Contents:Write on ${PRIVATE_REPO}; Contents:Read-only can download the source but not publish."
-              exit 1
-            fi
-            _published=$((_published + 1))
-            echo "IMAGE_PERSISTENCE=UPLOADED ${d} -> ${PRIVATE_REPO} release ${_tag}"
-          done
-          if [ "$_published" -eq 0 ]; then
-            echo "IMAGE_PERSISTENCE=FAIL (this build produced no Image to publish)"
-            exit 1
-          fi
-          echo "IMAGE_RELEASE_TAG=${_tag}"
-          echo "PRIVATE_IMAGE_PERSISTENCE=DONE (the Image lives in the PRIVATE release; nothing binary was published from the public farm)"
+          set -euo pipefail
+          TAG="kernel-v2-$(date -u +%Y%m%dT%H%M%SZ)"
+          AP="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_ODIN_AP.tar.md5"
+          gh release create "$TAG" "$AP#NOTE9_UAC2_V2_N960N_ODIN_AP.tar.md5" "${RESULTS}/v2/SHA256SUMS#SHA256SUMS" --repo "$PRIVATE_REPO" --title "NEW VERIFIED BUILD — Note9 SM-N960N UAC2 V2 Odin AP" --notes "Samsung-native splice-only V2. Stock boot SHA256 pinned; only kernel bytes replaced; non-kernel bytes identical; SEANDROIDENFORCE retained; LZ4 round-trip verified. Build farm run ${GITHUB_RUN_ID}."
+          echo "V2_RELEASE_TAG=$TAG"
+          echo "V2_PRIVATE_PERSISTENCE=PASS"
 
       - name: "phase 8 · upload build evidence"
         if: ${{ success() }}
