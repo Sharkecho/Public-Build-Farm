@@ -1,0 +1,105 @@
+name: Note9 LiveOS LineageOS 20 Baseline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: note9-liveos-lineage20-baseline
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev             gcc-multilib g++-multilib libc6-dev-i386 libncurses5-dev x11proto-core-dev             libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig             python3 bc ccache rsync libssl-dev libelf-dev
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Configure ccache
+        run: |
+          ccache -M 10G
+          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
+          echo "CCACHE_EXEC=$(command -v ccache)" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: note9-lineage20-crownlte-ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            note9-lineage20-crownlte-ccache-${{ runner.os }}-
+
+      - name: Init LineageOS 20
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/lineage"
+          cd "$GITHUB_WORKSPACE/lineage"
+          repo init -u https://github.com/LineageOS/android.git -b lineage-20 --git-lfs
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/crownlte.xml <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <project name="LineageOS/android_device_samsung_crownlte" path="device/samsung/crownlte" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_device_samsung_exynos9810-common" path="device/samsung/exynos9810-common" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_kernel_samsung_exynos9810" path="kernel/samsung/exynos9810" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_device_samsung_slsi_sepolicy" path="device/samsung_slsi/sepolicy" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_hardware_samsung" path="hardware/samsung" remote="github" revision="lineage-20" />
+          </manifest>
+          EOF
+
+      - name: Sync source
+        working-directory: lineage
+        run: |
+          repo sync -c --force-sync --no-clone-bundle --no-tags -j4
+          df -h
+
+      - name: Proprietary blob gate
+        working-directory: lineage
+        run: |
+          if [ ! -d vendor/samsung/crownlte ] || [ ! -f vendor/samsung/crownlte/BoardConfigVendor.mk ]; then
+            echo "VENDOR_BLOBS=ABSENT"
+            echo "STOP: LineageOS source/device/kernel synced correctly, but proprietary vendor blobs are not present."
+            echo "A reproducible baseline build must obtain the matching crownlte vendor tree/blobs before compilation."
+            exit 2
+          fi
+          echo "VENDOR_BLOBS=PRESENT"
+
+      - name: Build untouched crownlte baseline
+        working-directory: lineage
+        run: |
+          source build/envsetup.sh
+          breakfast crownlte
+          brunch crownlte
+
+      - name: Collect baseline
+        if: success()
+        run: |
+          mkdir -p artifact
+          cp lineage/out/target/product/crownlte/lineage-*.zip artifact/
+          cp lineage/out/target/product/crownlte/boot.img artifact/ 2>/dev/null || true
+          cp lineage/out/target/product/crownlte/recovery.img artifact/ 2>/dev/null || true
+          (cd artifact && sha256sum * > SHA256SUMS)
+          cat artifact/SHA256SUMS
+
+      - name: Upload baseline
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-liveos-lineage20-crownlte-baseline
+          path: artifact/
+          retention-days: 7
+          compression-level: 0
