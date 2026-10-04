@@ -1015,10 +1015,16 @@ jobs:
               if names != ["boot.img.lz4"]:
                   raise SystemExit(f"ODIN_TAR_VERIFY=FAIL entries={names}")
               ti=t.getmember("boot.img.lz4")
-              if ti.uid != 1000 or ti.gid != 1000 or (ti.mode & 0o7777) != 0o664:
+              # SamsungImageRepacker intentionally preserves the runner's native tar
+              # ownership metadata. Odin dispatches by member name; uid/gid are not a
+              # partition-routing contract. Require only the mature backend's expected
+              # single member and safe regular-file mode instead of imposing our old
+              # self-authored uid/gid=1000 convention on its output.
+              if not ti.isfile() or (ti.mode & 0o7777) not in (0o644, 0o664):
                   raise SystemExit(
                       f"ODIN_TAR_VERIFY=FAIL metadata uid={ti.uid} gid={ti.gid} mode={oct(ti.mode)}"
                   )
+              print(f"ODIN_TAR_METADATA=uid:{ti.uid},gid:{ti.gid},mode:{oct(ti.mode)}")
           print("ODIN_TAR_VERIFY=PASS")
           print("ODIN_MD5_LAYER=REMOVED")
           PY
