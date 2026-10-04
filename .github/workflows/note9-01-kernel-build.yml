@@ -958,6 +958,13 @@ jobs:
           # samsung_lz4.py imports the Python lz4 module; install it explicitly on the ephemeral runner.
           python3 -m pip install --disable-pip-version-check --no-input lz4
           python3 -c "import lz4.block; print('PYTHON_LZ4=PASS')"
+          # Mature Samsung packaging backend is pinned in the private source repo.
+          PACKAGER_PIN="5e3b76c94a4f9b7a4bdbb04db9c8679dcaf068ee"
+          git clone -q https://github.com/Mnky313/SamsungImageRepacker.git vendor-samsung-packager
+          git -C vendor-samsung-packager checkout -q "$PACKAGER_PIN"
+          [ "$(git -C vendor-samsung-packager rev-parse HEAD)" = "$PACKAGER_PIN" ]
+          echo "SAMSUNG_PACKAGER=Mnky313/SamsungImageRepacker"
+          echo "SAMSUNG_PACKAGER_PIN=$PACKAGER_PIN"
           mkdir -p "${RESULTS}/v2"
           STOCK="${RESULTS}/v2/stock_boot.img"
           NEWBOOT="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_boot.img"
@@ -1027,7 +1034,7 @@ jobs:
           set -euo pipefail
           TAG="kernel-v2-$(date -u +%Y%m%dT%H%M%SZ)"
           AP="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_ODIN_AP.tar"
-          gh release create "$TAG" "$AP#NOTE9_UAC2_V2_N960N_ODIN_AP.tar" "${RESULTS}/v2/SHA256SUMS#SHA256SUMS" --repo "$PRIVATE_REPO" --title "NEW VERIFIED BUILD — Note9 SM-N960N UAC2 V2 Odin AP" --notes "Samsung-native splice-only V2 plain AP tar. Stock boot SHA256 pinned; only kernel bytes replaced; non-kernel bytes identical; SEANDROIDENFORCE retained; LZ4 round-trip verified; MD5 footer intentionally removed after Odin 3.13.1 incompatibility. Build farm run ${GITHUB_RUN_ID}."
+          gh release create "$TAG" "$AP#NOTE9_UAC2_V2_N960N_ODIN_AP.tar" "${RESULTS}/v2/SHA256SUMS#SHA256SUMS" --repo "$PRIVATE_REPO" --title "NEW VERIFIED BUILD — Note9 SM-N960N UAC2 V2 Odin AP" --notes "Samsung-native splice-only V2 plain AP tar. Mature packaging backend pinned: Mnky313/SamsungImageRepacker@5e3b76c94a4f9b7a4bdbb04db9c8679dcaf068ee. Stock boot SHA256 pinned; only kernel bytes replaced; non-kernel bytes identical; SEANDROIDENFORCE retained; LZ4 round-trip verified; no custom MD5 footer. Build farm run ${GITHUB_RUN_ID}."
           echo "V2_RELEASE_TAG=$TAG"
           echo "V2_PRIVATE_PERSISTENCE=PASS"
 
