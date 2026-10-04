@@ -52,22 +52,42 @@ jobs:
           git ls-remote --exit-code --heads https://github.com/LineageOS/android.git refs/heads/lineage-20.0 >/dev/null
           echo "MANIFEST_BRANCH=lineage-20.0 VERIFIED"
           repo init -u https://github.com/LineageOS/android.git -b lineage-20.0 --git-lfs
+          # Device/kernel repos use lineage-20 (without .0). Verify every local-manifest ref
+          # before a multi-GB sync so branch mistakes fail in seconds, not after source download.
+          for repo in \
+            android_device_samsung_crownlte \
+            android_device_samsung_exynos9810-common \
+            android_kernel_samsung_exynos9810 \
+            android_device_samsung_slsi_sepolicy \
+            android_hardware_samsung; do
+            echo "VERIFY LineageOS/$repo refs/heads/lineage-20"
+            git ls-remote --exit-code --heads "https://github.com/LineageOS/$repo.git" refs/heads/lineage-20 >/dev/null
+          done
           mkdir -p .repo/local_manifests
           cat > .repo/local_manifests/crownlte.xml <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <project name="LineageOS/android_device_samsung_crownlte" path="device/samsung/crownlte" remote="github" revision="lineage-20.0" />
-            <project name="LineageOS/android_device_samsung_exynos9810-common" path="device/samsung/exynos9810-common" remote="github" revision="lineage-20.0" />
-            <project name="LineageOS/android_kernel_samsung_exynos9810" path="kernel/samsung/exynos9810" remote="github" revision="lineage-20.0" />
-            <project name="LineageOS/android_device_samsung_slsi_sepolicy" path="device/samsung_slsi/sepolicy" remote="github" revision="lineage-20.0" />
-            <project name="LineageOS/android_hardware_samsung" path="hardware/samsung" remote="github" revision="lineage-20.0" />
+            <project name="LineageOS/android_device_samsung_crownlte" path="device/samsung/crownlte" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_device_samsung_exynos9810-common" path="device/samsung/exynos9810-common" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_kernel_samsung_exynos9810" path="kernel/samsung/exynos9810" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_device_samsung_slsi_sepolicy" path="device/samsung_slsi/sepolicy" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_hardware_samsung" path="hardware/samsung" remote="github" revision="lineage-20" />
           </manifest>
           EOF
 
       - name: Sync source
         working-directory: lineage
         run: |
+          # First sync only the Note9-specific trees. This makes any device-tree/ref failure explicit.
+          repo sync -c --force-sync --no-clone-bundle --no-tags -j4 \
+            device/samsung/crownlte \
+            device/samsung/exynos9810-common \
+            kernel/samsung/exynos9810 \
+            device/samsung_slsi/sepolicy \
+            hardware/samsung
+          # Then sync the platform manifest.
           repo sync -c --force-sync --no-clone-bundle --no-tags -j4
+          repo status
           df -h
 
       - name: Proprietary blob gate
