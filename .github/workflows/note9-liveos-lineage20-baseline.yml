@@ -120,11 +120,14 @@ jobs:
           } | tee -a "$GITHUB_WORKSPACE/diagnostics/summary.log"
 
           printf 'NOTE9_SYNC_RC=%s\nFULL_SYNC_RC=%s\n' "$NOTE9_RC" "$FULL_RC" > "$GITHUB_WORKSPACE/diagnostics/result.env"
-          if [ "$NOTE9_RC" -ne 0 ] || [ "$FULL_RC" -ne 0 ]; then
-            exit 1
+          if [ "$NOTE9_RC" -eq 0 ] && [ "$FULL_RC" -eq 0 ]; then
+            echo "SYNC_OK=true" >> "$GITHUB_OUTPUT"
+            repo status
+            df -h
+          else
+            echo "SYNC_OK=false" >> "$GITHUB_OUTPUT"
           fi
-          repo status
-          df -h
+          exit 0
 
       - name: Upload sync diagnostics
         if: always()
@@ -133,7 +136,14 @@ jobs:
           name: note9-lineage20-sync-diagnostics-${{ github.run_id }}
           path: diagnostics/
           retention-days: 7
-          if-no-files-found: warn
+          if-no-files-found: error
+
+      - name: Fail after diagnostics if sync failed
+        if: steps.sync.outputs.SYNC_OK != 'true'
+        run: |
+          echo "SYNC_RESULT=FAIL"
+          echo "Diagnostics were uploaded before this failure gate."
+          exit 1
 
       - name: Proprietary blob gate
         working-directory: lineage
