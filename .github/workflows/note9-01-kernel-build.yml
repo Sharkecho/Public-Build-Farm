@@ -994,17 +994,18 @@ jobs:
           echo "ROUNDTRIP_KERNEL_SHA256=PASS"
           python3 "${SOURCE_REPO_DIR}/scripts/samsung_lz4.py" compress "$NEWBOOT" "${RESULTS}/v2/boot.img.lz4"
           python3 "${SOURCE_REPO_DIR}/scripts/samsung_lz4.py" verify "${RESULTS}/v2/boot.img.lz4" "$NEWBOOT"
-          WORK="${RESULTS}/v2/tarstage"; mkdir -p "$WORK"; cp "${RESULTS}/v2/boot.img.lz4" "$WORK/boot.img.lz4"
-          TAR="${RESULTS}/v2/AP.tar"
-          # bsdtar on ubuntu-22.04 does not support GNU tar's --uname/--gname options.
-          # Use GNU tar explicitly; numeric uid/gid and ustar are the compatibility-critical fields.
-          /usr/bin/tar --format=ustar --mode=0664 --owner=1000 --group=1000 --numeric-owner -C "$WORK" -cf "$TAR" boot.img.lz4
-          # Odin expects the md5sum *text record* appended to the tar, not 16 raw digest bytes.
-          # This is the same convention used by Samsung firmware .tar.md5 packages.
-          # Final delivery is a plain Odin AP .tar.  No .tar.md5 footer:
-          # Windows Odin accepts AP tar archives, and removing the footer eliminates
-          # the compatibility layer that repeatedly failed on Odin 3.13.1.
-          cp "$TAR" "$AP"
+          # Delegate AP tar creation to the pinned SamsungImageRepacker convention
+          # documented upstream: put partition images in Custom/AP and tar *.* from there.
+          PACK_ROOT="$GITHUB_WORKSPACE/vendor-samsung-packager"
+          rm -rf "$PACK_ROOT/Custom/AP"
+          mkdir -p "$PACK_ROOT/Custom/AP"
+          cp "${RESULTS}/v2/boot.img.lz4" "$PACK_ROOT/Custom/AP/boot.img.lz4"
+          (
+            cd "$PACK_ROOT/Custom/AP"
+            tar -cvf ../AP_modified.tar *.*
+          )
+          cp "$PACK_ROOT/Custom/AP_modified.tar" "$AP"
+          echo "PACKAGING_BACKEND=SamsungImageRepacker@${PACKAGER_PIN}"
           # Independent archive verification before release.
           python3 - "$AP" <<'PY'
           import sys, tarfile
