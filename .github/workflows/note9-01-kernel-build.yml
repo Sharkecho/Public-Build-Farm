@@ -955,6 +955,9 @@ jobs:
           SEANDROID_OFFSET: "35213312"
         run: |
           set -euo pipefail
+          # samsung_lz4.py imports the Python lz4 module; install it explicitly on the ephemeral runner.
+          python3 -m pip install --disable-pip-version-check --no-input lz4
+          python3 -c "import lz4.block; print('PYTHON_LZ4=PASS')"
           mkdir -p "${RESULTS}/v2"
           STOCK="${RESULTS}/v2/stock_boot.img"
           NEWBOOT="${RESULTS}/v2/NOTE9_UAC2_V2_N960N_boot.img"
