@@ -992,10 +992,15 @@ jobs:
           # bsdtar on ubuntu-22.04 does not support GNU tar's --uname/--gname options.
           # Use GNU tar explicitly; numeric uid/gid and ustar are the compatibility-critical fields.
           /usr/bin/tar --format=ustar --mode=0664 --owner=1000 --group=1000 --numeric-owner -C "$WORK" -cf "$TAR" boot.img.lz4
+          # Odin expects the md5sum *text record* appended to the tar, not 16 raw digest bytes.
+          # This is the same convention used by Samsung firmware .tar.md5 packages.
           MD5="$(md5sum "$TAR" | awk '{print $1}')"
-          cp "$TAR" "$AP"; printf '%s' "$MD5" | xxd -r -p >> "$AP"
-          PAYLOAD=$(( $(stat -c '%s' "$AP") - 16 ))
-          [ "$(head -c "$PAYLOAD" "$AP" | md5sum | awk '{print $1}')" = "$(tail -c 16 "$AP" | xxd -p | tr -d '\n')" ]
+          cp "$TAR" "$AP"
+          printf '%s  %s\n' "$MD5" "$(basename "$TAR")" >> "$AP"
+          # Consumer-style verification: split at the original tar size and re-hash exactly that payload.
+          TAR_BYTES="$(stat -c '%s' "$TAR")"
+          [ "$(head -c "$TAR_BYTES" "$AP" | md5sum | awk '{print $1}')" = "$MD5" ]
+          tail -n 1 "$AP" | grep -Eq "^$MD5  AP\\.tar$"
           sha256sum "$NEWBOOT" "${RESULTS}/v2/boot.img.lz4" "$AP" > "${RESULTS}/v2/SHA256SUMS"
           echo "V2_ODIN_AP_BUILD=PASS"
           cat "${RESULTS}/v2/SHA256SUMS"
