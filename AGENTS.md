@@ -1,18 +1,29 @@
-# AGENTS.md — Public Build Farm
+# Public Build Farm — Agent Routing
 
-This repository is PUBLIC and build-only.
+This repository is shared build infrastructure. The engineering control plane is `Sharkecho/Engineering-Control`.
 
-## Mandatory rules
+## Active project routes
 
-1. Never add product/private source code to this repository.
-2. Heavy compilation belongs here; lightweight control-plane tests do not.
-3. All private-source workflows must be manual (`workflow_dispatch`) unless the owner explicitly approves another trusted trigger.
-4. Private checkout uses `BUILD_FARM_SOURCE_TOKEN`, read-only, with `persist-credentials: false`.
-5. Never print tokens or production secrets.
-6. Never add production deployment logic here.
-7. Never use paid Larger Runners without explicit approval.
-8. Public artifacts must not contain private source, raw private evidence, credentials, or private server/device configuration.
-9. A copied workflow must be adapted so `github.sha`, `github.repository`, `GITHUB_TOKEN`, release/run lookups, and repository-relative paths refer to the private source correctly.
-10. Keep the private workflow as manual fallback until the public path has a real PASS.
+### LiveOS / LineageOS 20 Baseline
+- Workflow: `.github/workflows/note9-liveos-lineage20-baseline.yml`
+- Project identity: LiveOS Base OS for Note9/crownlte.
+- Control-plane definition: `Engineering-Control/projects/LiveOS.md`
+- This is NOT the Note9 UAC2 kernel project.
+- Goal: reproducible baseline OS artifact; upper LiveOS remains separable.
+- On failure: inspect the exact Actions run and diagnostic artifacts before modifying or rerunning.
 
-Global policy: https://github.com/Sharkecho/Sharkecho/blob/main/GLOBAL_BUILD_COMPUTE_POLICY.md
+### Note9 Kernel / UAC2
+- Workflow: `.github/workflows/note9-01-kernel-build.yml`
+- Private source repository: `Sharkecho/note9-01`
+- Control-plane definition: `Engineering-Control/projects/Note9-Kernel.md`
+- This is NOT LiveOS.
+- Private source, credentials and Samsung source archives must never be exposed through this public repository.
+
+## Shared rules
+1. Determine which workflow/project owns the task before changing anything.
+2. Never transfer assumptions, patches, build steps or acceptance criteria between LiveOS and Note9 Kernel without an explicit integration task.
+3. Diagnose CI from run/job/log/artifact evidence.
+4. Do not blindly rerun deterministic failures.
+5. Make minimal changes and validate only the affected path.
+6. Keep secrets/private source out of this public repository.
+7. A build task is complete only when its required artifact and verification gates pass.
