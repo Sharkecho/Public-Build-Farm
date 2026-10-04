@@ -48,16 +48,19 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/lineage"
           cd "$GITHUB_WORKSPACE/lineage"
-          repo init -u https://github.com/LineageOS/android.git -b lineage-20 --git-lfs
+          # Fail fast if the manifest branch disappears or is renamed.
+          git ls-remote --exit-code --heads https://github.com/LineageOS/android.git refs/heads/lineage-20.0 >/dev/null
+          echo "MANIFEST_BRANCH=lineage-20.0 VERIFIED"
+          repo init -u https://github.com/LineageOS/android.git -b lineage-20.0 --git-lfs
           mkdir -p .repo/local_manifests
           cat > .repo/local_manifests/crownlte.xml <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <project name="LineageOS/android_device_samsung_crownlte" path="device/samsung/crownlte" remote="github" revision="lineage-20" />
-            <project name="LineageOS/android_device_samsung_exynos9810-common" path="device/samsung/exynos9810-common" remote="github" revision="lineage-20" />
-            <project name="LineageOS/android_kernel_samsung_exynos9810" path="kernel/samsung/exynos9810" remote="github" revision="lineage-20" />
-            <project name="LineageOS/android_device_samsung_slsi_sepolicy" path="device/samsung_slsi/sepolicy" remote="github" revision="lineage-20" />
-            <project name="LineageOS/android_hardware_samsung" path="hardware/samsung" remote="github" revision="lineage-20" />
+            <project name="LineageOS/android_device_samsung_crownlte" path="device/samsung/crownlte" remote="github" revision="lineage-20.0" />
+            <project name="LineageOS/android_device_samsung_exynos9810-common" path="device/samsung/exynos9810-common" remote="github" revision="lineage-20.0" />
+            <project name="LineageOS/android_kernel_samsung_exynos9810" path="kernel/samsung/exynos9810" remote="github" revision="lineage-20.0" />
+            <project name="LineageOS/android_device_samsung_slsi_sepolicy" path="device/samsung_slsi/sepolicy" remote="github" revision="lineage-20.0" />
+            <project name="LineageOS/android_hardware_samsung" path="hardware/samsung" remote="github" revision="lineage-20.0" />
           </manifest>
           EOF
 
