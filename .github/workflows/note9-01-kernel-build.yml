@@ -998,7 +998,9 @@ jobs:
           SH
           chmod 0755 "${RESULTS}/v3/twrp/META-INF/com/google/android/update-binary"
           printf '# dummy updater-script; logic is in update-binary\n' > "${RESULTS}/v3/twrp/META-INF/com/google/android/updater-script"
-          (cd "${RESULTS}/v3/twrp" && zip -r -9 "$ZIP" META-INF boot.img >/dev/null)
+          ZIP_ABS="$(readlink -f "$ZIP")"
+          (cd "${RESULTS}/v3/twrp" && zip -r -9 "$ZIP_ABS" META-INF boot.img >/dev/null)
+          ZIP="$ZIP_ABS"
           unzip -t "$ZIP"
           [ "$(unzip -p "$ZIP" boot.img | sha256sum | awk '{print $1}')" = "$(sha256sum "$NEWBOOT" | awk '{print $1}')" ]
           sha256sum "$NEWBOOT" "$ZIP" > "${RESULTS}/v3/SHA256SUMS"
