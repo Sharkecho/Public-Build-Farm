@@ -30,45 +30,38 @@ jobs:
           cp "$IMG" Image.uac2
           cp "$DT" dt.img
 
-      - name: Fetch proven boot repack tool
+      - name: Repack with LineageOS 20 host boot tools
         run: |
           set -euo pipefail
-          curl -fL --retry 5 -o magiskboot \
-            "https://raw.githubusercontent.com/Redminote11tech/exynos9810-kernel/duhan-%284.9.337%29/Apollo/kernelzip/floyd/tools/magiskboot"
-          chmod +x magiskboot
-          test -x magiskboot
-
-      - name: Repack current Lineage boot with frozen UAC2 kernel and DT
-        run: |
-          set -euo pipefail
-          mkdir work
-          cp current-boot.img work/boot.img
-          cp magiskboot work/
-          cd work
-          ./magiskboot unpack boot.img
-          test -s kernel
-          test -s extra
-          sha256sum kernel extra > ORIGINAL_COMPONENTS.sha256
-          cp ../Image.uac2 kernel
-          cp ../dt.img extra
-          ./magiskboot repack boot.img
-          test -s new-boot.img
-          cp new-boot.img ../Note9-N960N-Lineage20-UAC2-boot.img
+          git clone --depth=1 --branch lineage-20.0 https://github.com/LineageOS/android_system_tools_mkbootimg mkbootimg-tools
+          mkdir unpacked
+          python3 mkbootimg-tools/unpack_bootimg.py --boot_img current-boot.img --out unpacked --format=mkbootimg > mkbootimg-args.txt
+          test -s unpacked/kernel
+          test -s unpacked/ramdisk
+          cp Image.uac2 unpacked/kernel
+          cp dt.img unpacked/dtb
+          python3 mkbootimg-tools/repack_bootimg.py \
+            --src_bootimg current-boot.img \
+            --dst_bootimg Note9-N960N-Lineage20-UAC2-boot.img \
+            --kernel unpacked/kernel \
+            --dtb unpacked/dtb
+          test -s Note9-N960N-Lineage20-UAC2-boot.img
 
       - name: Validate final boot image
         run: |
           set -euo pipefail
-          test -s Note9-N960N-Lineage20-UAC2-boot.img
           SIZE="$(stat -c %s Note9-N960N-Lineage20-UAC2-boot.img)"
           test "$SIZE" -le 57671680
-          mkdir verify
-          cp Note9-N960N-Lineage20-UAC2-boot.img verify/boot.img
-          cp magiskboot verify/
-          cd verify
-          ./magiskboot unpack boot.img
-          echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  kernel" | sha256sum -c -
-          echo "c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35  extra" | sha256sum -c -
-          cd ..
+          rm -rf verify && mkdir verify
+          python3 mkbootimg-tools/unpack_bootimg.py --boot_img Note9-N960N-Lineage20-UAC2-boot.img --out verify >/dev/null
+          test -s verify/kernel
+          echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  verify/kernel" | sha256sum -c -
+          if [ -s verify/dtb ]; then
+            echo "c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35  verify/dtb" | sha256sum -c -
+          else
+            echo "ERROR: repacked boot has no separated DTB"
+            exit 1
+          fi
           sha256sum Note9-N960N-Lineage20-UAC2-boot.img > Note9-N960N-Lineage20-UAC2-boot.img.sha256
           {
             echo "DEVICE=SM-N960N"
