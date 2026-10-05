@@ -55,26 +55,42 @@ jobs:
           echo "=== android_device_create (the android0 registration) ==="
           grep -n 'android_device_create\|device_create(android_class' drivers/usb/gadget/configfs.c | head
 
-      - name: V1 - materialize config and normalize
+      - name: V1 - materialize the TRUE V1 config (as actually running on the phone)
         run: |
           set -e
           cd kernel
+          # The phone runs a kernel whose config is NOT the plain defconfig:
+          # UAC2 was enabled on top of exynos9810-crownlte_defconfig.
+          # Reproduce exactly that, so V1 == the real running kernel.
           make ARCH=arm64 "$DEFCONFIG"
+          scripts/config --file .config --enable USB_CONFIGFS_F_UAC2
           make ARCH=arm64 olddefconfig
+          grep -qx 'CONFIG_USB_CONFIGFS_F_UAC2=y' .config
+          grep -qx 'CONFIG_USB_G_ANDROID=y' .config
           cp .config "$GITHUB_WORKSPACE/V1.config"
           echo "V1 CONFIG_ symbol lines: $(grep -c '^CONFIG_' "$GITHUB_WORKSPACE/V1.config")"
           sha256sum "$GITHUB_WORKSPACE/V1.config"
+          echo "=== V1 vs the config extracted from the running phone kernel ==="
+          diff "$GITHUB_WORKSPACE/phone-V1.config" "$GITHUB_WORKSPACE/V1.config" \
+            | grep -E '^[<>]' | head -40 || true
+          echo "(above should be empty or cosmetic - proves V1 is faithful)"
 
       - name: V2 - disable legacy android_usb and resolve dependencies
         run: |
           set -e
           cd kernel
+          printf '%s\n' "--- forcing the two symbols off ---"
           scripts/config --file .config --disable USB_G_ANDROID
           scripts/config --file .config --disable USB_ANDROID_SAMSUNG_COMPOSITE
+          # UAC2 must survive the removal; re-assert it explicitly so the
+          # audit measures the Kconfig graph, not our own omission.
+          scripts/config --file .config --enable USB_CONFIGFS_F_UAC2
           make ARCH=arm64 olddefconfig
           cp .config "$GITHUB_WORKSPACE/V2.config"
           echo "V2 CONFIG_ symbol lines: $(grep -c '^CONFIG_' "$GITHUB_WORKSPACE/V2.config")"
           sha256sum "$GITHUB_WORKSPACE/V2.config"
+          echo "=== UAC2 state in V2 ==="
+          grep 'UAC2' "$GITHUB_WORKSPACE/V2.config" || true
 
       - name: Produce V1_V2_CONFIG_DIFF.txt
         run: |
@@ -181,6 +197,7 @@ jobs:
         with:
           name: note9-v2-preflight-config-audit
           path: |
+            phone-V1.config
             V1.config
             V2.config
             V1_V2_CONFIG_DIFF.txt
