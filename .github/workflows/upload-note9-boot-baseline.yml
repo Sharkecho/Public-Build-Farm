@@ -27,7 +27,7 @@ jobs:
             exit 1
           fi
           echo "BOOT_SHA256=$(sha256sum "$DIR/current-lineage20-boot.img" | cut -d' ' -f1)"
-          (cd "$DIR" && sha256sum -c current-lineage20-boot.img.sha256)
+          (cd "$DIR" && sed 's/\r$//' current-lineage20-boot.img.sha256 | sha256sum -c -)
 
       - name: Upload baseline artifact
         uses: actions/upload-artifact@v4
