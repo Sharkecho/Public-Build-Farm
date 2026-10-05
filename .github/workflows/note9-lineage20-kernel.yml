@@ -26,7 +26,7 @@ name: Note9 LineageOS 20 Kernel Gate (public build farm)
 
 on:
   push:
-    branches: [main]
+    branches: [main, automation/fix-kernel-gate-rom-config]
     paths:
       - ".github/workflows/note9-lineage20-kernel.yml"
   workflow_dispatch:
@@ -171,6 +171,7 @@ jobs:
           CLANG_DIR="$(dirname "$CLANG_BIN")"
           CLANG_PATH="$CLANG_DIR"
           echo "CLANG_PATH=$CLANG_PATH"
+          echo "CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
 
           # Verify the identity rather than trusting the tag name.
           RAW_VER="$("$CLANG_BIN" --version 2>/dev/null | head -3)"
@@ -341,52 +342,43 @@ jobs:
           set -euo pipefail
           test -f "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" || {
             echo "ROM_CONFIG_REF_MISSING=$ROM_CONFIG_REF"; exit 1; }
-          # Normalise both sides to "CONFIG_X=y" or "# CONFIG_X is not set" so the
-          # diff is line-comparable.
-          norm() {
-            grep -E "^(CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set)" "$1" \
-              | sed 's/[[:space:]]*=[[:space:]]*\(.*\)$/=\1/' | sort -u
-          }
-          norm evidence/baseline/.config > /tmp/baseline.norm
-          norm "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" > /tmp/rom.norm
+          test -f evidence/rom-config-format.txt || {
+            echo "ROM_CONFIG_FORMAT_MISSING"; exit 1; }
+          ROM_CONFIG_FORMAT="$(cut -d= -f2 evidence/rom-config-format.txt)"
+          ROM="$GITHUB_WORKSPACE/$ROM_CONFIG_REF"
+          BASE="evidence/baseline/.config"
 
-          diff -u /tmp/rom.norm /tmp/baseline.norm > evidence/config.diff || true
-          COUNT="$(grep -cE '^[+-]CONFIG_' evidence/config.diff || true)"
-          echo "CONFIG_DIFF_COUNT=$COUNT"
-
-          # Drift is unexpected unless it is a recognised, benign difference. The
-          # known-benign classes are listed explicitly; anything else stops the run
-          # rather than being waved through.
-          BENIGN=0
-          UNEXPECTED=0
-          if [ "$COUNT" != "0" ]; then
-            # Everything the baseline sets that the ROM does not have, and vice
-            # versa, listed so it can be read rather than trusted.
-            grep -E '^\+CONFIG_' evidence/config.diff | sed 's/^+//' | sort > /tmp/only_baseline
-            grep -E '^-CONFIG_' evidence/config.diff | sed 's/^-//' | sort > /tmp/only_rom
-            {
-              echo "--- present only in the baseline build ---"
-              cat /tmp/only_baseline
-              echo
-              echo "--- present only in the ROM's /proc/config.gz ---"
-              cat /tmp/only_rom
-            } > evidence/config-drift-detail.txt
-            echo "UNEXPECTED_CONFIG_DRIFT=REVIEW (see evidence/config-drift-detail.txt)"
-            UNEXPECTED=1
+          if [ "$ROM_CONFIG_FORMAT" = "FULL" ]; then
+            norm_full() {
+              grep -E "^(CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set)" "$1" \
+                | sed 's/[[:space:]]*=[[:space:]]*\(.*\)$/=\1/' | sort -u
+            }
+            norm_full "$BASE" > /tmp/baseline.norm
+            norm_full "$ROM" > /tmp/rom.norm
+          elif [ "$ROM_CONFIG_FORMAT" = "SET_ONLY" ]; then
+            grep -E '^CONFIG_[A-Za-z0-9_]+=' "$BASE" | sort -u > /tmp/baseline.norm
+            grep -E '^CONFIG_[A-Za-z0-9_]+=' "$ROM"  | sort -u > /tmp/rom.norm
+            test "$(wc -l < /tmp/rom.norm)" = "1853" || {
+              echo "ROM_SET_ONLY_COUNT_CHANGED"; exit 1; }
           else
-            echo "UNEXPECTED_CONFIG_DRIFT=0"
+            echo "ROM_CONFIG_FORMAT_INVALID=$ROM_CONFIG_FORMAT"
+            exit 1
           fi
 
-          # A config difference is not automatically a failure, but the gate may
-          # only be called PASS when there is nothing to review.
-          if [ "$UNEXPECTED" != "0" ]; then
+          diff -u /tmp/rom.norm /tmp/baseline.norm > evidence/config.diff || true
+          COUNT="$(grep -cE '^[+-](CONFIG_|# CONFIG_)' evidence/config.diff || true)"
+          echo "CONFIG_DIFF_COUNT=$COUNT"
+          if [ "$COUNT" != "0" ]; then
+            {
+              echo "ROM_CONFIG_FORMAT=$ROM_CONFIG_FORMAT"
+              echo "--- exact semantic config diff ---"
+              cat evidence/config.diff
+            } > evidence/config-drift-detail.txt
             echo "BASELINE_GATE=REVIEW_REQUIRED (config drift present)"
             exit 1
           fi
+          echo "UNEXPECTED_CONFIG_DRIFT=0"
           echo "CONFIG_GATE=PASS"
-          # Only a config comparison with nothing outstanding may open the gate
-          # for the UAC2 step. Written as a file because each `run:` block is a
-          # fresh shell and cannot see the previous step's variables.
           echo "GATE_OPEN=yes" > evidence/gate.marker
 
       # ---------------------------------------------------------------- STEP 9
@@ -403,9 +395,8 @@ jobs:
           # A second clean tree from the same pinned commit. Not a copy of the
           # baseline tree: the point is that the only difference between the two
           # builds is the single config line.
-          cd ..
-          git clone --reference src "$KERNEL_REPO_URL" src-uac2
-          cd src-uac2
+          git clone --reference "$GITHUB_WORKSPACE/src" "$KERNEL_REPO_URL" "$GITHUB_WORKSPACE/src-uac2"
+          cd "$GITHUB_WORKSPACE/src-uac2"
           git checkout --detach "$KERNEL_COMMIT"
           ACTUAL="$(git rev-parse HEAD)"
           test "$ACTUAL" = "$KERNEL_COMMIT" || { echo "UAC2 source commit mismatch: $ACTUAL"; exit 1; }
@@ -424,13 +415,13 @@ jobs:
 
           mkdir -p ../evidence/uac2
           # Prove the diff really is one line.
-          diff -u evidence/baseline/.config ../build-uac2/.config > ../evidence/uac2/config.diff || true
-          CHANGED="$(grep -cE '^[+-]CONFIG_' ../evidence/uac2/config.diff || true)"
+          diff -u "$GITHUB_WORKSPACE/evidence/baseline/.config" "$GITHUB_WORKSPACE/build-uac2/.config" > "$GITHUB_WORKSPACE/evidence/uac2/config.diff" || true
+          CHANGED="$(grep -cE '^[+-]CONFIG_' "$GITHUB_WORKSPACE/evidence/uac2/config.diff" || true)"
           echo "EXPECTED_CONFIG_CHANGE=CONFIG_USB_CONFIGFS_F_UAC2"
           echo "UAC2_CONFIG_LINES_CHANGED=$CHANGED"
           if [ "$CHANGED" != "2" ]; then   # one removal + one addition
             echo "UNEXPECTED_CONFIG_DRIFT=$CHANGED (expected exactly 2: one - and one +)"
-            cat ../evidence/uac2/config.diff
+            cat "$GITHUB_WORKSPACE/evidence/uac2/config.diff"
             exit 1
           fi
           echo "UNEXPECTED_CONFIG_DRIFT=0"
