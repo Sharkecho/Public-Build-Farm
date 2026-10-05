@@ -2,6 +2,18 @@ name: Note9 LineageOS20 Kernel V2 — Build + ONE-SHOT
 
 on:
   workflow_dispatch:
+    inputs:
+      resume_from:
+        description: "Resume checkpoint"
+        required: true
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - config
+          - build
+          - package
+          - full
 
 permissions:
   contents: read
@@ -18,7 +30,43 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
+      - name: Resolve resume checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.resume_from }}
+        run: |
+          set -euo pipefail
+          mkdir -p resume
+          if [ "$REQUESTED" = full ]; then echo "RESUME=full" >> "$GITHUB_ENV"; exit 0; fi
+          RESUME=full
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow note9-linuxos-kernel-v2.yml --status success --limit 20 --json databaseId -q '.[].databaseId' > resume/runs.txt || true
+          while read -r RUN; do
+            [ -n "$RUN" ] || continue
+            rm -rf resume/probe && mkdir -p resume/probe
+            if gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name note9-lineageos20-kernel-v2-oneshot --dir resume/probe >/dev/null 2>&1; then
+              test -s resume/probe/Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip || continue
+              unzip -t resume/probe/Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip >/dev/null || continue
+              cp -a resume/probe/. .
+              RESUME=package
+              echo "CHECKPOINT_RUN=$RUN" >> "$GITHUB_ENV"
+              break
+            fi
+            rm -rf resume/probe && mkdir -p resume/probe
+            if gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name note9-v2-build-checkpoint --dir resume/probe >/dev/null 2>&1; then
+              test -s resume/probe/Image.uac2 && test -s resume/probe/dt.img || continue
+              test "$(dd if=resume/probe/dt.img bs=4 count=1 status=none)" = "DTBH" || continue
+              cp -a resume/probe/. .
+              RESUME=build
+              echo "CHECKPOINT_RUN=$RUN" >> "$GITHUB_ENV"
+              break
+            fi
+          done < resume/runs.txt
+          [ "$REQUESTED" = auto ] || RESUME="$REQUESTED"
+          echo "RESUME=$RESUME" >> "$GITHUB_ENV"
+          echo "RESUME_SELECTED=$RESUME"
+
       - name: Dependencies and frozen sources
+        if: ${{ env.RESUME == 'full' || env.RESUME == 'config' }}
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -47,6 +95,7 @@ jobs:
           ln -sfn liblto_plugin.so.0 "$LTO/liblto_plugin.so"
 
       - name: Apply frozen DPU compatibility patch
+        if: ${{ env.RESUME == 'full' || env.RESUME == 'config' }}
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -63,6 +112,7 @@ jobs:
           git diff --check
 
       - name: Restore authoritative V1 config checkpoint
+        if: ${{ env.RESUME == 'full' || env.RESUME == 'config' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,6 +125,7 @@ jobs:
           sha256sum V1.config | tee V1.config.sha256
 
       - name: Derive V2 config and audit USB capabilities
+        if: ${{ env.RESUME == 'full' || env.RESUME == 'config' }}
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -131,7 +182,7 @@ jobs:
           PY
 
       - name: Save config checkpoint even on gate failure
-        if: ${{ always() }}
+        if: ${{ always() && (env.RESUME == 'full' || env.RESUME == 'config') }}
         uses: actions/upload-artifact@v4
         with:
           name: note9-v2-config-checkpoint
@@ -145,6 +196,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Build V2 kernel
+        if: ${{ env.RESUME == 'full' || env.RESUME == 'config' }}
         working-directory: kernel
         env:
           ARCH: arm64
@@ -165,6 +217,7 @@ jobs:
           cp out/v2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
 
       - name: Build frozen Exynos9810 DTBH
+        if: ${{ env.RESUME == 'full' || env.RESUME == 'config' }}
         run: |
           set -euo pipefail
           curl -fL --retry 5 -o dtbtool.c "https://raw.githubusercontent.com/ananjaser1211/Apollo/30656faf075847e98f0f60a8b4282a25c7e23f80/scripts/dtbtool_exynos/dtbtool.c"
@@ -176,7 +229,19 @@ jobs:
           test -s dt.img
           test "$(dd if=dt.img bs=4 count=1 status=none)" = "DTBH"
 
+      - name: Save build checkpoint
+        if: ${{ env.RESUME == 'full' || env.RESUME == 'config' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-build-checkpoint
+          path: |
+            Image.uac2
+            dt.img
+            V2.config
+          retention-days: 30
+
       - name: Materialize audited ONE-SHOT installer
+        if: ${{ env.RESUME != 'package' }}
         run: |
           cat > pipeline-v2-install.sh <<'ONE_SHOT_EOF'
           #!/sbin/sh
@@ -274,6 +339,7 @@ jobs:
           sh -n pipeline-v2-install.sh
 
       - name: Build V2 ONE-SHOT recovery package
+        if: ${{ env.RESUME != 'package' }}
         run: |
           set -euo pipefail
           ROOT="$(find apollo -mindepth 1 -maxdepth 1 -type d | head -1)"
