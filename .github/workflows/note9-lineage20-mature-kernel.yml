@@ -168,9 +168,13 @@ jobs:
           grep '^CONFIG_USB_CONFIGFS_F_UAC2=y$' out/uac2/.config
           make O=out/uac2 ARCH=arm64 -j"$(nproc)"
           test -s out/uac2/arch/arm64/boot/Image
-          test -s out/uac2/arch/arm64/boot/dtb.img
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
-          cp out/uac2/arch/arm64/boot/dtb.img "$GITHUB_WORKSPACE/dtb.uac2.img"
+          DTBDIR=out/uac2/arch/arm64/boot/dts/exynos
+          mapfile -t DTBS < <(find "$DTBDIR" -maxdepth 1 -type f -name 'exynos9810-crownlte_eur_open_*.dtb' | sort)
+          test "${#DTBS[@]}" -eq 8
+          cat "${DTBS[@]}" > "$GITHUB_WORKSPACE/dtb.uac2.img"
+          test -s "$GITHUB_WORKSPACE/dtb.uac2.img"
+          printf '%s\n' "${DTBS[@]}" > "$GITHUB_WORKSPACE/dtb-components.txt"
           sha256sum "$GITHUB_WORKSPACE/Image.uac2" "$GITHUB_WORKSPACE/dtb.uac2.img"
 
       - name: Package N960N installer materials
@@ -216,6 +220,7 @@ jobs:
             Image.baseline
             Image.uac2
             dtb.uac2.img
+            dtb-components.txt
             Note9-N960N-Lineage20-UAC2-installer-materials.zip
             Note9-N960N-Lineage20-UAC2-installer-materials.zip.sha256
             diagnostic-build.log
