@@ -103,7 +103,27 @@ jobs:
           fi
           echo "ROM_CONFIG_SOURCE=public-release lo20-baseline-ref"
           SET_LINES="$(grep -c '^CONFIG_' "$REF" || true)"
-          UNSET_LINES="$(grep -cE '^# CONFIG_[A-Za-z0-9_]+ is not set
+          echo "ROM_CONFIG_SET_LINES=$SET_LINES"
+
+          # The asset bytes are already hard-pinned by size and SHA256 above.
+          # Fail closed if the running-ROM snapshot explicitly enables UAC2.
+          if grep -q "^CONFIG_USB_CONFIGFS_F_UAC2=y" "$REF"; then
+            echo "ROM_CONFIG_PRECONDITION=FAIL (ROM enables F_UAC2)"
+            exit 1
+          fi
+
+          # This exact pinned asset is an enabled-symbol snapshot. If a future
+          # asset becomes a full .config, preserve that distinction explicitly.
+          if grep -q "^# CONFIG_USB_CONFIGFS_F_UAC2 is not set" "$REF"; then
+            echo "ROM_CONFIG_FORMAT=FULL" | tee evidence/rom-config-format.txt
+          else
+            test "$SET_LINES" = "1853" || {
+              echo "ROM_CONFIG_PRECONDITION=FAIL (unexpected pinned snapshot shape)"
+              exit 1
+            }
+            echo "ROM_CONFIG_FORMAT=SET_ONLY" | tee evidence/rom-config-format.txt
+          fi
+          echo "ROM_CONFIG_PRECONDITION=PASS"
 
       - name: "source identity — checkout the pinned commit"
         run: |
