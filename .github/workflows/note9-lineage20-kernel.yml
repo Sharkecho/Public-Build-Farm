@@ -71,18 +71,37 @@ jobs:
       - name: "stage ROM reference config"
         run: |
           set -euo pipefail
-          # The phone's /proc/config.gz, captured read-only from the running ROM
-          # and committed under baseline-ref/. It is the reference for the config
-          # gate, so the gate can run on a runner with no phone attached.
-          test -f "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" || {
-            echo "ROM_CONFIG_REF_MISSING=$ROM_CONFIG_REF"
-            echo "  This file is the phone's /proc/config.gz and must be committed"
-            echo "  into this repository for the config gate to run."
+          # The phone's /proc/config.gz, captured read-only from the running ROM.
+          # Fetched from the release rather than vendored into this repository: it
+          # is 164 KB of machine-generated text that changes on every ROM build,
+          # and keeping it in git would mean a commit for every nightly. The gate
+          # therefore downloads the exact copy this run compares against and
+          # records its sha256, so the comparison is still pinned.
+          mkdir -p evidence baseline-ref
+          echo "ROM_CONFIG_REF=release:lo20-baseline-ref/rom-proc-config.txt"
+          if gh release download lo20-baseline-ref \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern "rom-proc-config.txt" \
+                --dir baseline-ref --clobber; then
+            echo "ROM_CONFIG_SOURCE=release lo20-baseline-ref"
+          else
+            echo "ROM_CONFIG_SOURCE=checkout fallback"
+            test -f "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" || {
+              echo "ROM_CONFIG_MISSING (release download failed and no committed copy)"
+              exit 1
+            }
+            cp "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" baseline-ref/rom-proc-config.txt
+          fi
+          REF=baseline-ref/rom-proc-config.txt
+          echo "ROM_CONFIG_REF_SHA256=$(sha256sum "$REF" | awk '{print $1}')"
+          echo "ROM_CONFIG_REF_LINES=$(grep -c '^CONFIG' "$REF")"
+          # The baseline this gate compares against must not have UAC2; if the ROM
+          # ever ships with it enabled, the premise of a one-line diff is gone.
+          grep -E "^# CONFIG_USB_CONFIGFS_F_UAC2 is not set$" "$REF" >/dev/null || {
+            echo "ROM_CONFIG_PRECONDITION=FAIL (ROM does not have F_UAC2 disabled)"
             exit 1
           }
-          mkdir -p evidence
-          echo "ROM_CONFIG_REF_SHA256=$(sha256sum "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" | awk '{print $1}')"
-          echo "ROM_CONFIG_REF_LINES=$(grep -c '^CONFIG' "$GITHUB_WORKSPACE/$ROM_CONFIG_REF")"
+          echo "ROM_CONFIG_PRECONDITION=PASS (F_UAC2 is not set in the ROM config)"
 
       - name: "source identity — checkout the pinned commit"
         run: |
