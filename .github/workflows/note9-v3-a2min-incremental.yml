@@ -58,9 +58,261 @@ jobs:
           tar -C kernel/out -I zstd -xf v2-checkpoint/out-uac2.tar.zst
           test -s kernel/out/uac2/.config
           grep -q '^CONFIG_USB_CONFIGFS_F_UAC2=y$' kernel/out/uac2/.config
-          grep -q '^CONFIG_USB_CONFIGFS_UEVENT=y$' kernel/out/uac2/.config
-          grep -q '^# CONFIG_USB_G_ANDROID is not set$' kernel/out/uac2/.config
-          grep -q '^# CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE is not set$' kernel/out/uac2/.config
+          grep -q '^CONFIG_USB_CONFIGFS_UEVENT=y
+
+      - name: Reapply V2 source deltas required by restored objects
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c")
+          s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/configfs.c")
+          s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"
+          anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s: s=s.replace(anchor, anchor+chr(10)+inc)
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/function/f_ncm.c")
+          s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"extern struct device *create_function_device(char *name);"
+          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    (void)ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
+          if compat not in s:
+              if marker not in s: raise SystemExit("f_ncm V2 anchor missing")
+              s=s.replace(marker,compat+marker)
+          p.write_text(s)
+          PY
+
+      - name: Apply reviewed V3 A2-MIN patch
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          git apply --check "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git apply "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git diff --check
+          git diff -- drivers/usb/gadget/configfs.c > "$GITHUB_WORKSPACE/V3_CONFIGFS.diff"
+          test "$(git status --short | grep '^ M ' | wc -l)" -ge 1
+
+      - name: Restore proven toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            compiler/clang-r416183
+            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          key: note9-v1gold-toolchains-r416183-apollo49-v1
+
+      - name: Incremental make V3
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          test -x "$TC/bin/clang"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          touch drivers/usb/gadget/configfs.c
+          make O=out/uac2 ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/v3-build.log"
+          test -s out/uac2/arch/arm64/boot/Image
+          cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.v3"
+          sha256sum "$GITHUB_WORKSPACE/Image.v3" > "$GITHUB_WORKSPACE/Image.v3.sha256"
+
+      - name: Save V3 checkpoint
+        if: ${{ always() }}
+        run: |
+          mkdir -p v3-result
+          cp Image.v3 Image.v3.sha256 V3_CONFIGFS.diff v3-build.log v3-result/ 2>/dev/null || true
+          cp kernel/out/uac2/.config v3-result/V3.config 2>/dev/null || true
+          tar -C kernel/out -I 'zstd -3 -T0' -cf v3-result/out-uac2-v3.tar.zst uac2 || true
+          printf 'BASE_V2_ARTIFACT=%s\nKERNEL_SOURCE=%s\nPATCH_SHA256=%s\nWORKFLOW_SHA=%s\n' "$V2_ARTIFACT_ID" "$KERNEL_COMMIT" "$PATCH_SHA256" "$GITHUB_SHA" > v3-result/BUILD-IDENTITY.txt
+
+      - name: Upload V3 checkpoint
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v3-a2min-${{ github.run_id }}
+          path: v3-result/
+          retention-days: 30
+ kernel/out/uac2/.config
+          ! grep -q '^CONFIG_USB_G_ANDROID=y
+
+      - name: Reapply V2 source deltas required by restored objects
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c")
+          s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/configfs.c")
+          s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"
+          anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s: s=s.replace(anchor, anchor+chr(10)+inc)
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/function/f_ncm.c")
+          s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"extern struct device *create_function_device(char *name);"
+          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    (void)ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
+          if compat not in s:
+              if marker not in s: raise SystemExit("f_ncm V2 anchor missing")
+              s=s.replace(marker,compat+marker)
+          p.write_text(s)
+          PY
+
+      - name: Apply reviewed V3 A2-MIN patch
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          git apply --check "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git apply "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git diff --check
+          git diff -- drivers/usb/gadget/configfs.c > "$GITHUB_WORKSPACE/V3_CONFIGFS.diff"
+          test "$(git status --short | grep '^ M ' | wc -l)" -ge 1
+
+      - name: Restore proven toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            compiler/clang-r416183
+            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          key: note9-v1gold-toolchains-r416183-apollo49-v1
+
+      - name: Incremental make V3
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          test -x "$TC/bin/clang"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          touch drivers/usb/gadget/configfs.c
+          make O=out/uac2 ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/v3-build.log"
+          test -s out/uac2/arch/arm64/boot/Image
+          cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.v3"
+          sha256sum "$GITHUB_WORKSPACE/Image.v3" > "$GITHUB_WORKSPACE/Image.v3.sha256"
+
+      - name: Save V3 checkpoint
+        if: ${{ always() }}
+        run: |
+          mkdir -p v3-result
+          cp Image.v3 Image.v3.sha256 V3_CONFIGFS.diff v3-build.log v3-result/ 2>/dev/null || true
+          cp kernel/out/uac2/.config v3-result/V3.config 2>/dev/null || true
+          tar -C kernel/out -I 'zstd -3 -T0' -cf v3-result/out-uac2-v3.tar.zst uac2 || true
+          printf 'BASE_V2_ARTIFACT=%s\nKERNEL_SOURCE=%s\nPATCH_SHA256=%s\nWORKFLOW_SHA=%s\n' "$V2_ARTIFACT_ID" "$KERNEL_COMMIT" "$PATCH_SHA256" "$GITHUB_SHA" > v3-result/BUILD-IDENTITY.txt
+
+      - name: Upload V3 checkpoint
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v3-a2min-${{ github.run_id }}
+          path: v3-result/
+          retention-days: 30
+ kernel/out/uac2/.config
+          ! grep -q '^CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE=y
+
+      - name: Reapply V2 source deltas required by restored objects
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c")
+          s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/configfs.c")
+          s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"
+          anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s: s=s.replace(anchor, anchor+chr(10)+inc)
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/function/f_ncm.c")
+          s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"extern struct device *create_function_device(char *name);"
+          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    (void)ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
+          if compat not in s:
+              if marker not in s: raise SystemExit("f_ncm V2 anchor missing")
+              s=s.replace(marker,compat+marker)
+          p.write_text(s)
+          PY
+
+      - name: Apply reviewed V3 A2-MIN patch
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          git apply --check "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git apply "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git diff --check
+          git diff -- drivers/usb/gadget/configfs.c > "$GITHUB_WORKSPACE/V3_CONFIGFS.diff"
+          test "$(git status --short | grep '^ M ' | wc -l)" -ge 1
+
+      - name: Restore proven toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            compiler/clang-r416183
+            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          key: note9-v1gold-toolchains-r416183-apollo49-v1
+
+      - name: Incremental make V3
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          test -x "$TC/bin/clang"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          touch drivers/usb/gadget/configfs.c
+          make O=out/uac2 ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/v3-build.log"
+          test -s out/uac2/arch/arm64/boot/Image
+          cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.v3"
+          sha256sum "$GITHUB_WORKSPACE/Image.v3" > "$GITHUB_WORKSPACE/Image.v3.sha256"
+
+      - name: Save V3 checkpoint
+        if: ${{ always() }}
+        run: |
+          mkdir -p v3-result
+          cp Image.v3 Image.v3.sha256 V3_CONFIGFS.diff v3-build.log v3-result/ 2>/dev/null || true
+          cp kernel/out/uac2/.config v3-result/V3.config 2>/dev/null || true
+          tar -C kernel/out -I 'zstd -3 -T0' -cf v3-result/out-uac2-v3.tar.zst uac2 || true
+          printf 'BASE_V2_ARTIFACT=%s\nKERNEL_SOURCE=%s\nPATCH_SHA256=%s\nWORKFLOW_SHA=%s\n' "$V2_ARTIFACT_ID" "$KERNEL_COMMIT" "$PATCH_SHA256" "$GITHUB_SHA" > v3-result/BUILD-IDENTITY.txt
+
+      - name: Upload V3 checkpoint
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v3-a2min-${{ github.run_id }}
+          path: v3-result/
+          retention-days: 30
+ kernel/out/uac2/.config
 
       - name: Reapply V2 source deltas required by restored objects
         working-directory: kernel
