@@ -86,7 +86,7 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
           export LLVM=1
-          export KCFLAGS="-Wno-error=unused-variable"
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes"
           mkdir -p out/baseline
           make O=out/baseline ARCH=arm64 "$DEFCONFIG"
           make O=out/baseline ARCH=arm64 -j"$(nproc)"
@@ -108,7 +108,7 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
           export LLVM=1
-          export KCFLAGS="-Wno-error=unused-variable"
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes"
           mkdir -p out/uac2
           make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
           scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
