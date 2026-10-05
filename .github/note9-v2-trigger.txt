@@ -1,0 +1,4 @@
+Note9 V2 trigger
+workflow: note9-lineage20-mature-kernel.yml
+target: latest main
+purpose: start new resumable V2 build without mobile workflow_dispatch UI
