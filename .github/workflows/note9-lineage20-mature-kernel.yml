@@ -39,14 +39,20 @@ jobs:
       - name: Import Apollo GCC 4.9 companion toolchain
         run: |
           set -euo pipefail
-          git clone --depth=1 --branch 'duhan-(4.9.337)' --filter=blob:none --sparse \
-            https://github.com/Redminote11tech/exynos9810-kernel.git apollo-toolchain
-          cd apollo-toolchain
-          git sparse-checkout set toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          ARCHIVE="$RUNNER_TEMP/apollo.tar.gz"
+          SRC="$RUNNER_TEMP/apollo-src"
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
+            -o "$ARCHIVE" \
+            "https://github.com/Redminote11tech/exynos9810-kernel/archive/refs/heads/duhan-%284.9.337%29.tar.gz"
+          mkdir -p "$SRC"
+          tar -xzf "$ARCHIVE" -C "$SRC"
+          ROOT="$(find "$SRC" -mindepth 1 -maxdepth 1 -type d | head -1)"
+          TOOLCHAIN="$ROOT/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          test -d "$TOOLCHAIN/bin"
           mkdir -p "$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp"
-          cp -a toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9 \
-            "$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/"
+          cp -a "$TOOLCHAIN" "$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/"
           GCC="$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc"
+          chmod +x "$GCC"
           test -x "$GCC"
           "$GCC" --version
 
