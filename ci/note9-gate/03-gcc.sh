@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$GITHUB_WORKSPACE"
+EVID="$ROOT/evidence"
+COMMIT="5c970a204b44b1002fd9cbc954084c03e7bf9008"
+DIR="$ROOT/toolchains/aarch64-linux-android-4.9"
+rm -rf "$DIR"
+mkdir -p "$DIR"
+curl -fL --retry 4   "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/$COMMIT.tar.gz"   | tar -xz -C "$DIR"
+test -x "$DIR/bin/aarch64-linux-android-gcc"
+RAW="$("$DIR/bin/aarch64-linux-android-gcc" --version | head -1)"
+echo "$RAW"
+echo "$RAW" | grep -q "4.9"
+echo "GCC_COMPANION_IDENTITY=PASS" | tee "$EVID/gcc.txt"
+echo "GCC_COMMIT=$COMMIT" >> "$EVID/gcc.txt"
+echo "GCC_VERSION=$RAW" >> "$EVID/gcc.txt"

@@ -1,0 +1,52 @@
+name: Note9 LineageOS 20 Kernel Gate Repair
+
+on:
+  push:
+    branches:
+      - automation/fix-kernel-gate-rom-config
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev python3 rsync unzip zip zstd curl cpio jq
+
+      - name: Reference and source identity
+        run: ci/note9-gate/01-reference-source.sh
+
+      - name: Exact clang identity
+        run: ci/note9-gate/02-clang.sh
+
+      - name: GCC companion identity
+        run: ci/note9-gate/03-gcc.sh
+
+      - name: Baseline defconfig
+        run: ci/note9-gate/04-baseline-defconfig.sh
+
+      - name: ROM config comparison
+        run: ci/note9-gate/05-config-gate.sh
+
+      - name: Baseline build
+        run: ci/note9-gate/06-baseline-build.sh
+
+      - name: ROM Image comparison
+        run: ci/note9-gate/07-baseline-gate.sh
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-lineage20-repair-evidence
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
