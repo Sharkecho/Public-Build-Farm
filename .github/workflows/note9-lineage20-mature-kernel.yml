@@ -95,57 +95,6 @@ jobs:
           git diff --check
           git diff -- "$FILE"
 
-      - name: Diagnostic compile — collect legacy failures
-        working-directory: kernel
-        env:
-          ARCH: arm64
-          SUBARCH: arm64
-          ANDROID_MAJOR_VERSION: q
-          PLATFORM_VERSION: 13.0.0
-        run: |
-          set -uo pipefail
-          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
-          export PATH="$TC/bin:$PATH"
-          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
-          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
-          export LLVM=1
-          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
-          rm -rf out/diagnostic
-          mkdir -p out/diagnostic
-          make O=out/diagnostic ARCH=arm64 "$DEFCONFIG"
-          set +e
-          make -k O=out/diagnostic ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/diagnostic-build.log"
-          RC=${PIPESTATUS[0]}
-          set -e
-          grep -E 'error:|fatal error:|undefined reference|Error [0-9]+' "$GITHUB_WORKSPACE/diagnostic-build.log" | sort -u > "$GITHUB_WORKSPACE/diagnostic-errors.txt" || true
-          echo "DIAGNOSTIC_MAKE_RC=$RC" | tee "$GITHUB_WORKSPACE/diagnostic-summary.txt"
-          echo "DIAGNOSTIC_ERROR_COUNT=$(wc -l < "$GITHUB_WORKSPACE/diagnostic-errors.txt")" | tee -a "$GITHUB_WORKSPACE/diagnostic-summary.txt"
-          cat "$GITHUB_WORKSPACE/diagnostic-errors.txt" || true
-          # Diagnostic failure is evidence, not a job failure. Formal build below remains the gate.
-          exit 0
-
-      - name: Build crownlte baseline using mature out-of-tree pattern
-        working-directory: kernel
-        env:
-          ARCH: arm64
-          SUBARCH: arm64
-          ANDROID_MAJOR_VERSION: q
-          PLATFORM_VERSION: 13.0.0
-        run: |
-          set -euo pipefail
-          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
-          export PATH="$TC/bin:$PATH"
-          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
-          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
-          export LLVM=1
-          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
-          mkdir -p out/baseline
-          make O=out/baseline ARCH=arm64 "$DEFCONFIG"
-          make O=out/baseline ARCH=arm64 -j"$(nproc)"
-          test -s out/baseline/arch/arm64/boot/Image
-          cp out/baseline/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.baseline"
-          sha256sum "$GITHUB_WORKSPACE/Image.baseline"
-
       - name: Build UAC2 variant from same verified source
         working-directory: kernel
         env:
@@ -172,6 +121,25 @@ jobs:
                   raise SystemExit("configfs include anchor missing")
               s=s.replace(anchor, anchor+chr(10)+inc)
           p.write_text(s)
+          assert inc in p.read_text().splitlines()
+
+          p=Path("drivers/usb/gadget/function/f_ncm.c")
+          s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE\nextern struct device *create_function_device(char *name);"
+          compat="""#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+void set_ncm_ready(bool ready)
+{
+    ncm_connect = ready;
+}
+EXPORT_SYMBOL(set_ncm_ready);
+#endif
+
+"""
+          if compat not in s:
+              if marker not in s:
+                  raise SystemExit("f_ncm compatibility anchor missing")
+              s=s.replace(marker, compat+marker)
+          p.write_text(s)
           PY
           mkdir -p out/uac2
           make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
@@ -185,31 +153,34 @@ jobs:
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
           sha256sum "$GITHUB_WORKSPACE/Image.uac2"
 
-      - name: Package safe kernel payload
+      - name: Save KERNEL_OUT checkpoint even on failure
+        if: ${{ always() }}
         run: |
-          mkdir -p package
-          cp Image.uac2 package/Image
-          cat > package/README-FIRST.txt <<'EOF'
-          Device: Samsung Galaxy Note9 SM-N960N / crownlte
-          ROM base: LineageOS 20
-          Kernel source: LineageOS/android_kernel_samsung_exynos9810
-          Commit: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
-          Change: CONFIG_USB_CONFIGFS_F_UAC2=y
-          This artifact is a validated kernel payload, not yet a flash-authorized boot image.
-          Preserve/restore the current boot image before any device write.
-          EOF
-          (cd package && sha256sum Image > SHA256SUMS)
-          zip -r9 Note9-Lineage20-UAC2-kernel-payload.zip package
-
-      - name: Upload kernel package
+          mkdir -p kernel-out-checkpoint
+          if [ -d kernel/out/uac2 ]; then
+            tar -C kernel/out -I 'zstd -3 -T0' -cf kernel-out-checkpoint/out-uac2.tar.zst uac2 || true
+          fi
+          cp kernel/out/uac2/.config kernel-out-checkpoint/V2.config 2>/dev/null || true
+          printf 'SOURCE_COMMIT=%s\nWORKFLOW_COMMIT=%s\n' "$KERNEL_COMMIT" "$GITHUB_SHA" > kernel-out-checkpoint/IDENTITY.txt
+          find kernel-out-checkpoint -type f -maxdepth 1 -exec sha256sum {} \; > kernel-out-checkpoint/SHA256SUMS || true
+      - name: Upload KERNEL_OUT checkpoint even on failure
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: note9-lineage20-uac2-kernel-payload
+          name: note9-v2-kernel-out-${{ github.run_id }}
+          path: kernel-out-checkpoint/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Save V2 kernel checkpoint
+        run: |
+          cp kernel/out/uac2/.config V2.config
+          sha256sum Image.uac2 V2.config > V2-SHA256SUMS
+      - name: Upload V2 kernel checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-kernel-checkpoint
           path: |
-            Note9-Lineage20-UAC2-kernel-payload.zip
-            Image.baseline
             Image.uac2
-            diagnostic-build.log
-            diagnostic-errors.txt
-            diagnostic-summary.txt
+            V2.config
+            V2-SHA256SUMS
           retention-days: 30
