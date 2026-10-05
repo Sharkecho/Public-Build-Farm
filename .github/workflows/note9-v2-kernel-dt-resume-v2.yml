@@ -1,0 +1,114 @@
+name: Note9 V2 — Resume Kernel + DT Checkpoint
+on:
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+env:
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
+  KERNEL_COMMIT: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/llvm-r416183/clang-r416183.tar.gz
+  APOLLO_URL: https://github.com/Redminote11tech/exynos9810-kernel/archive/refs/heads/duhan-%284.9.337%29.tar.gz
+jobs:
+  kernel-dt:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Restore frozen V1 config and derive V2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 37322657420 --repo "$GITHUB_REPOSITORY" --name note9-v2-preflight-config-audit --dir audit
+          V1="$(find audit -type f -name V1.config | head -1)"
+          test -s "$V1"
+          cp "$V1" V1.config
+          echo "5e2608d65d213d3fc17bbb24038112cdc36ed16e781c52920b7e21c367c5bc60  V1.config" | sha256sum -c -
+      - name: Prepare frozen source and toolchains
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev python3 curl libfdt-dev
+          git clone --filter=blob:none "$KERNEL_REPO" kernel
+          cd kernel
+          git fetch --depth=1 origin "$KERNEL_COMMIT"
+          git checkout --detach "$KERNEL_COMMIT"
+          cd ..
+          mkdir -p compiler/clang-r416183
+          curl -fL --retry 4 "$CLANG_URL" | tar -xz -C compiler/clang-r416183
+          curl -fL --retry 5 -o apollo.tar.gz "$APOLLO_URL"
+          mkdir apollo && tar -xzf apollo.tar.gz -C apollo
+          ROOT="$(find apollo -mindepth 1 -maxdepth 1 -type d | head -1)"
+          TC="$ROOT/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          mkdir -p kernel/toolchain/gcc-cfp/gcc-ibv-jopp
+          cp -a "$TC" kernel/toolchain/gcc-cfp/gcc-ibv-jopp/
+          DEST="$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          find "$DEST/bin" -type f -exec chmod +x {} +
+          find "$DEST/libexec" -type f -exec chmod +x {} + || true
+          LTO="$DEST/libexec/gcc/aarch64-linux-android/4.9.x"
+          ln -sfn liblto_plugin.so.0.0.0 "$LTO/liblto_plugin.so.0"
+          ln -sfn liblto_plugin.so.0 "$LTO/liblto_plugin.so"
+      - name: Apply frozen DPU patch and derive V2 config
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c"); s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/configfs.c"); s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"; anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s:
+              if anchor not in s: raise SystemExit("configfs include anchor missing")
+              s=s.replace(anchor, anchor+"\\n"+inc)
+          p.write_text(s)
+          PY
+          grep -q '^#include <linux/usblog_proc_notify.h>$' drivers/usb/gadget/configfs.c
+          mkdir -p out/v2
+          cp "$GITHUB_WORKSPACE/V1.config" out/v2/.config
+          scripts/config --file out/v2/.config -d USB_G_ANDROID
+          scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
+          make O=out/v2 ARCH=arm64 olddefconfig
+          cp out/v2/.config "$GITHUB_WORKSPACE/V2.config"
+      - name: Build V2 kernel
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          make O=out/v2 ARCH=arm64 -j"$(nproc)"
+          test -s out/v2/arch/arm64/boot/Image
+          test -s out/v2/drivers/usb/gadget/function/f_uac2.o
+          test -s out/v2/drivers/usb/gadget/function/usb_f_uac2.o
+          cp out/v2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
+      - name: Build DTBH
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 -o dtbtool.c "https://raw.githubusercontent.com/ananjaser1211/Apollo/30656faf075847e98f0f60a8b4282a25c7e23f80/scripts/dtbtool_exynos/dtbtool.c"
+          gcc -O2 dtbtool.c -lfdt -o dtbtool-exynos
+          DTBDIR="$GITHUB_WORKSPACE/kernel/out/v2/arch/arm64/boot/dts/exynos"
+          mapfile -t DTBS < <(find "$DTBDIR" -maxdepth 1 -type f -name 'exynos9810-crownlte_*.dtb' | sort)
+          test "${#DTBS[@]}" -gt 0
+          ./dtbtool-exynos --pagesize 2048 --platform 0x50a6 --subtype 0x217584da -o dt.img "${DTBS[@]}"
+          test "$(dd if=dt.img bs=4 count=1 status=none)" = "DTBH"
+          sha256sum Image.uac2 dt.img V2.config | tee KERNEL-DT-SHA256.txt
+      - name: Upload Kernel + DT checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-kernel-dt-checkpoint
+          path: |
+            Image.uac2
+            dt.img
+            V2.config
+            KERNEL-DT-SHA256.txt
+          retention-days: 30
