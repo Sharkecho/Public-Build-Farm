@@ -56,10 +56,14 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y device-tree-compiler
-          git clone --filter=blob:none https://github.com/LineageOS/android_kernel_samsung_exynos9810 kernel
-          cd kernel
+          git clone --filter=blob:none https://github.com/LineageOS/android_kernel_samsung_exynos9810 kernel-src
+          cd kernel-src
           git fetch --depth=1 origin 6a9461f9460ca51d1217e5069a5d5556fcc79e63
           git checkout --detach 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+          cd "$GITHUB_WORKSPACE"
+          cp -a kernel-src/. kernel/
+          rm -rf kernel-src
+          cd kernel
           mkdir -p out/dtb
           make O=out/dtb ARCH=arm64 exynos9810-crownlte_defconfig
           make O=out/dtb ARCH=arm64 dtbs -j"$(nproc)"
