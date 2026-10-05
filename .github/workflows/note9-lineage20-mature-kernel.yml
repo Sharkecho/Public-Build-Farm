@@ -191,7 +191,7 @@ jobs:
           assert inc in p.read_text().splitlines()
           p=Path("drivers/usb/gadget/function/f_ncm.c"); s=p.read_text()
           marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"extern struct device *create_function_device(char *name);"
-          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    ncm_connect = ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
+          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    (void)ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
           if compat not in s:
               if marker not in s: raise SystemExit("f_ncm compatibility anchor missing")
               s=s.replace(marker, compat+marker)
