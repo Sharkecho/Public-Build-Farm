@@ -1,0 +1,54 @@
+name: Note9 V2 — Resume Config Checkpoint
+on:
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  config-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Restore authoritative V1 checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 37322657420 --repo "$GITHUB_REPOSITORY" --name note9-v2-preflight-config-audit --dir audit
+          V1="$(find audit -type f -name V1.config | head -1)"
+          test -s "$V1"
+          cp "$V1" V1.config
+          sha256sum V1.config | tee V1.config.sha256
+      - name: Fetch frozen Kconfig source
+        run: |
+          git clone --filter=blob:none https://github.com/LineageOS/android_kernel_samsung_exynos9810 kernel
+          cd kernel
+          git checkout --detach 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+      - name: Derive observable V2 config
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          mkdir -p out/v2
+          cp "$GITHUB_WORKSPACE/V1.config" out/v2/.config
+          scripts/config --file out/v2/.config -d USB_G_ANDROID
+          scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
+          make O=out/v2 ARCH=arm64 olddefconfig
+          cp out/v2/.config "$GITHUB_WORKSPACE/V2.config"
+          KEYS="USB_CONFIGFS USB_CONFIGFS_F_UAC2 USB_F_UAC2 USB_CONFIGFS_F_FS USB_F_FS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS USB_F_NCM USB_F_RNDIS USB_XHCI_HCD USB_XHCI_PLATFORM USB_DWC3_DUAL_ROLE USB_RTL8152 USB_G_ANDROID USB_ANDROID_SAMSUNG_COMPOSITE"
+          : > "$GITHUB_WORKSPACE/USB-CAPABILITY-AUDIT.txt"
+          for x in $KEYS; do
+            V1="$(grep -E "^CONFIG_${x}=|^# CONFIG_${x} is not set$" "$GITHUB_WORKSPACE/V1.config" | head -1 || true)"
+            V2="$(grep -E "^CONFIG_${x}=|^# CONFIG_${x} is not set$" out/v2/.config | head -1 || true)"
+            printf '%-42s | V1: %-48s | V2: %s\n' "CONFIG_${x}" "${V1:-ABSENT}" "${V2:-ABSENT}" | tee -a "$GITHUB_WORKSPACE/USB-CAPABILITY-AUDIT.txt"
+          done
+          diff -u "$GITHUB_WORKSPACE/V1.config" out/v2/.config > "$GITHUB_WORKSPACE/V1-to-V2.config.diff" || true
+      - name: Upload config checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-config-checkpoint
+          path: |
+            V1.config
+            V1.config.sha256
+            V2.config
+            USB-CAPABILITY-AUDIT.txt
+            V1-to-V2.config.diff
+          retention-days: 30
