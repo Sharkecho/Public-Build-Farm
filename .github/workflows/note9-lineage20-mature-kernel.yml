@@ -1,0 +1,108 @@
+name: Note9 LineageOS 20 Mature Kernel Pipeline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
+  KERNEL_COMMIT: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+  DEFCONFIG: exynos9810-crownlte_defconfig
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/llvm-r416183/clang-r416183.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Install mature build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev             python3 rsync unzip zip zstd curl cpio
+
+      - name: Checkout exact running-kernel source
+        run: |
+          git clone --filter=blob:none "$KERNEL_REPO" kernel
+          cd kernel
+          git fetch --depth=1 origin "$KERNEL_COMMIT"
+          git checkout --detach "$KERNEL_COMMIT"
+          test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
+
+      - name: Install pinned AOSP Clang
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/compiler/clang-r416183"
+          curl -fL --retry 4 "$CLANG_URL" | tar -xz -C "$GITHUB_WORKSPACE/compiler/clang-r416183"
+          "$GITHUB_WORKSPACE/compiler/clang-r416183/bin/clang" --version
+
+      - name: Build crownlte baseline using mature out-of-tree pattern
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
+          export LLVM=1
+          mkdir -p out/baseline
+          make O=out/baseline ARCH=arm64 "$DEFCONFIG"
+          make O=out/baseline ARCH=arm64 -j"$(nproc)"
+          test -s out/baseline/arch/arm64/boot/Image
+          cp out/baseline/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.baseline"
+          sha256sum "$GITHUB_WORKSPACE/Image.baseline"
+
+      - name: Build UAC2 variant from same verified source
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
+          export LLVM=1
+          mkdir -p out/uac2
+          make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
+          scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
+          make O=out/uac2 ARCH=arm64 olddefconfig
+          grep '^CONFIG_USB_CONFIGFS_F_UAC2=y$' out/uac2/.config
+          make O=out/uac2 ARCH=arm64 -j"$(nproc)"
+          test -s out/uac2/arch/arm64/boot/Image
+          cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
+          sha256sum "$GITHUB_WORKSPACE/Image.uac2"
+
+      - name: Package safe kernel payload
+        run: |
+          mkdir -p package
+          cp Image.uac2 package/Image
+          cat > package/README-FIRST.txt <<'EOF'
+          Device: Samsung Galaxy Note9 SM-N960N / crownlte
+          ROM base: LineageOS 20
+          Kernel source: LineageOS/android_kernel_samsung_exynos9810
+          Commit: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+          Change: CONFIG_USB_CONFIGFS_F_UAC2=y
+          This artifact is a validated kernel payload, not yet a flash-authorized boot image.
+          Preserve/restore the current boot image before any device write.
+          EOF
+          (cd package && sha256sum Image > SHA256SUMS)
+          zip -r9 Note9-Lineage20-UAC2-kernel-payload.zip package
+
+      - name: Upload kernel package
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-lineage20-uac2-kernel-payload
+          path: |
+            Note9-Lineage20-UAC2-kernel-payload.zip
+            Image.baseline
+            Image.uac2
+          retention-days: 30
