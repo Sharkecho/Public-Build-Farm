@@ -16,11 +16,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir input
-          gh run download 37299363583 --repo "$GITHUB_REPOSITORY" --name note9-n960n-uac2-package-only --dir input
-          IMG="$(find input -type f -name Image.uac2 | head -1)"
-          DT="$(find input -type f -name dt.img | head -1)"
-          echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  $IMG" | sha256sum -c -
+          mkdir -p input/kernel input/dt
+          gh run download 37358362619 --repo "$GITHUB_REPOSITORY" --name note9-lineage20-uac2-kernel-payload --dir input/kernel
+          gh run download 37299363583 --repo "$GITHUB_REPOSITORY" --name note9-n960n-uac2-package-only --dir input/dt
+          IMG="$(find input/kernel -type f -name Image.uac2 | head -1)"
+          DT="$(find input/dt -type f -name dt.img | head -1)"
+          echo "b32d386158a9aef31cdde5d796b294068f98c6c3167ed54884815ceb2cf186aa  $IMG" | sha256sum -c -
           echo "c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35  $DT" | sha256sum -c -
           cp "$IMG" Image.uac2
           cp "$DT" dt.img
@@ -82,7 +83,7 @@ jobs:
           {
             echo "DEVICE=SM-N960N"
             echo "ROM=LineageOS 20"
-            echo "KERNEL_SHA256=3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6"
+            echo "KERNEL_SHA256=b32d386158a9aef31cdde5d796b294068f98c6c3167ed54884815ceb2cf186aa"
             echo "DT_SHA256=c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35"
             echo "MODE=RECOVERY_REPACK_NO_AUTOWRITE"
           } > installer/BUILD-IDENTITY.txt
