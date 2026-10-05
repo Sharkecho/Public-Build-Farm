@@ -58,8 +58,62 @@ jobs:
           s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
           s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
           s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          # ConfigFS uses Samsung USB log symbols under CONFIG_USB_NOTIFY_PROC_LOG.
+          # Legacy Samsung composite previously supplied this header indirectly.
+          # Include it explicitly so ConfigFS remains independent of legacy composite.
+          inc='#include <linux/usblog_proc_notify.h>'
+          if inc not in s:
+              anchor='#include <linux/soc/samsung/exynos-soc.h>'
+              if anchor not in s:
+                  raise SystemExit('configfs include anchor missing')
+              s=s.replace(anchor, anchor+'\\n'+inc)
           p.write_text(s)
           PY
+          grep -q '^#include <linux/usblog_proc_notify.h>          cp "$GITHUB_WORKSPACE/V1.config" out/v2/.config
+          scripts/config --file out/v2/.config -d USB_G_ANDROID
+          scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
+          make O=out/v2 ARCH=arm64 olddefconfig
+          cp out/v2/.config "$GITHUB_WORKSPACE/V2.config"
+      - name: Build V2 kernel
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          make O=out/v2 ARCH=arm64 -j"$(nproc)"
+          test -s out/v2/arch/arm64/boot/Image
+          test -s out/v2/drivers/usb/gadget/function/f_uac2.o
+          test -s out/v2/drivers/usb/gadget/function/usb_f_uac2.o
+          cp out/v2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
+      - name: Build DTBH
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 -o dtbtool.c "https://raw.githubusercontent.com/ananjaser1211/Apollo/30656faf075847e98f0f60a8b4282a25c7e23f80/scripts/dtbtool_exynos/dtbtool.c"
+          gcc -O2 dtbtool.c -lfdt -o dtbtool-exynos
+          DTBDIR="$GITHUB_WORKSPACE/kernel/out/v2/arch/arm64/boot/dts/exynos"
+          mapfile -t DTBS < <(find "$DTBDIR" -maxdepth 1 -type f -name 'exynos9810-crownlte_*.dtb' | sort)
+          test "${#DTBS[@]}" -gt 0
+          ./dtbtool-exynos --pagesize 2048 --platform 0x50a6 --subtype 0x217584da -o dt.img "${DTBS[@]}"
+          test "$(dd if=dt.img bs=4 count=1 status=none)" = "DTBH"
+          sha256sum Image.uac2 dt.img V2.config | tee KERNEL-DT-SHA256.txt
+      - name: Upload Kernel + DT checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-kernel-dt-checkpoint
+          path: |
+            Image.uac2
+            dt.img
+            V2.config
+            KERNEL-DT-SHA256.txt
+          retention-days: 30
+ drivers/usb/gadget/configfs.c
           mkdir -p out/v2
           cp "$GITHUB_WORKSPACE/V1.config" out/v2/.config
           scripts/config --file out/v2/.config -d USB_G_ANDROID
