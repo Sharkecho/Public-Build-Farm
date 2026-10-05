@@ -51,8 +51,14 @@ jobs:
           test -d "$TOOLCHAIN/bin"
           mkdir -p "$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp"
           cp -a "$TOOLCHAIN" "$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/"
-          GCC="$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc"
-          chmod +x "$GCC"
+          DEST="$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          # GitHub branch archives do not reliably preserve executable mode for every
+          # nested prebuilt. Restore it for compiler wrappers and real executables.
+          find "$DEST/bin" -type f -exec chmod +x {} +
+          if [ -d "$DEST/libexec" ]; then
+            find "$DEST/libexec" -type f -exec chmod +x {} +
+          fi
+          GCC="$DEST/bin/aarch64-linux-android-gcc"
           test -x "$GCC"
           "$GCC" --version
 
