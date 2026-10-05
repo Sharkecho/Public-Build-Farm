@@ -29,6 +29,28 @@ jobs:
           echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  $IMG" | sha256sum -c -
           cp "$IMG" Image.uac2
 
+      - name: Import proven Apollo GCC 4.9 dependency
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/apollo.tar.gz"
+          SRC="$RUNNER_TEMP/apollo-src"
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 -o "$ARCHIVE" \
+            "https://github.com/Redminote11tech/exynos9810-kernel/archive/refs/heads/duhan-%284.9.337%29.tar.gz"
+          mkdir -p "$SRC"
+          tar -xzf "$ARCHIVE" -C "$SRC"
+          ROOT="$(find "$SRC" -mindepth 1 -maxdepth 1 -type d | head -1)"
+          TOOLCHAIN="$ROOT/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          test -d "$TOOLCHAIN/bin"
+          mkdir -p kernel/toolchain/gcc-cfp/gcc-ibv-jopp
+          cp -a "$TOOLCHAIN" kernel/toolchain/gcc-cfp/gcc-ibv-jopp/
+          DEST="$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          find "$DEST/bin" -type f -exec chmod +x {} +
+          if [ -d "$DEST/libexec" ]; then find "$DEST/libexec" -type f -exec chmod +x {} +; fi
+          LTO="$DEST/libexec/gcc/aarch64-linux-android/4.9.x"
+          ln -sfn liblto_plugin.so.0.0.0 "$LTO/liblto_plugin.so.0"
+          ln -sfn liblto_plugin.so.0 "$LTO/liblto_plugin.so"
+          test -x "$DEST/bin/aarch64-linux-android-gcc"
+
       - name: Build crownlte DTBs only
         run: |
           set -euo pipefail
