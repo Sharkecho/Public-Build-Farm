@@ -2,6 +2,11 @@ name: Note9 V3 A2-MIN Incremental Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/note9-v3-trigger.txt"
 
 permissions:
   contents: read
