@@ -1,0 +1,161 @@
+name: Note9 V3 A2-MIN Incremental Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
+  KERNEL_COMMIT: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+  PATCH_PATH: note9-01/patches/V3_A2_MIN_configfs.patch
+  PATCH_SHA256: 9c54d93775cf56a97080233d272c42830956c6a8b382093f97491b6fa43adceb
+  V2_ARTIFACT_ID: "11365833883"
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/llvm-r416183/clang-r416183.tar.gz
+
+jobs:
+  incremental:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Install minimal dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev python3 unzip zip zstd curl cpio
+
+      - name: Checkout exact kernel source and reviewed patch
+        uses: actions/checkout@v4
+        with:
+          path: farm
+
+      - name: Checkout exact LineageOS kernel source
+        run: |
+          git clone --filter=blob:none "$KERNEL_REPO" kernel
+          cd kernel
+          git fetch --depth=1 origin "$KERNEL_COMMIT"
+          git checkout --detach "$KERNEL_COMMIT"
+          test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
+          sha256sum "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          echo "$PATCH_SHA256  $GITHUB_WORKSPACE/farm/$PATCH_PATH" | sha256sum -c -
+
+      - name: Restore proven toolchain cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            compiler/clang-r416183
+            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          key: note9-v1gold-toolchains-r416183-apollo49-v1
+
+      - name: Fail if proven toolchain cache is unavailable
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Proven V2 toolchain cache missing; refusing to substitute a new toolchain."
+          exit 1
+
+      - name: Restore V2 KERNEL_OUT checkpoint 11365833883
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir checkpoint
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V2_ARTIFACT_ID/zip" > checkpoint.zip
+          unzip -q checkpoint.zip -d checkpoint
+          test -s checkpoint/out-uac2.tar.zst
+          test -s checkpoint/V2.config
+          mkdir -p kernel/out
+          tar -C kernel/out -I zstd -xf checkpoint/out-uac2.tar.zst
+          test -s kernel/out/uac2/.config
+          cmp checkpoint/V2.config kernel/out/uac2/.config
+          grep '^CONFIG_USB_CONFIGFS_F_UAC2=y$' kernel/out/uac2/.config
+          grep '^CONFIG_USB_CONFIGFS_UEVENT=y$' kernel/out/uac2/.config
+          grep '^# CONFIG_USB_G_ANDROID is not set$' kernel/out/uac2/.config
+          grep '^# CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE is not set$' kernel/out/uac2/.config
+          echo "CHECKPOINT_RESTORED=PASS"
+
+      - name: Reapply exact V2 source deltas
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c"); s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/configfs.c"); s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"; anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s: s=s.replace(anchor, anchor+chr(10)+inc)
+          p.write_text(s)
+          p=Path("drivers/usb/gadget/function/f_ncm.c"); s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"extern struct device *create_function_device(char *name);"
+          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    (void)ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
+          if compat not in s: s=s.replace(marker, compat+marker)
+          p.write_text(s)
+          PY
+          git diff --check
+
+      - name: Apply reviewed V3 A2-MIN patch
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          git diff --check
+          test "$(git diff --name-only | grep -c '^drivers/usb/gadget/configfs.c$')" -eq 1
+          grep -q 'uac2_func' drivers/usb/gadget/configfs.c
+          git diff -- drivers/usb/gadget/configfs.c > "$GITHUB_WORKSPACE/V3-configfs.diff"
+
+      - name: Incremental V3 make from V2 checkpoint
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
+          export LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          OBJ="out/uac2/drivers/usb/gadget/configfs.o"
+          BEFORE=0
+          [ ! -e "$OBJ" ] || BEFORE="$(stat -c %Y "$OBJ")"
+          sleep 1
+          make O=out/uac2 ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/V3-incremental-build.log"
+          test -s "$OBJ"
+          AFTER="$(stat -c %Y "$OBJ")"
+          test "$AFTER" -gt "$BEFORE"
+          test -s out/uac2/arch/arm64/boot/Image
+          cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.v3"
+          sha256sum "$GITHUB_WORKSPACE/Image.v3" | tee "$GITHUB_WORKSPACE/V3-IMAGE-SHA256"
+
+      - name: Save V3 checkpoint
+        if: ${{ always() }}
+        run: |
+          mkdir -p v3-result
+          cp Image.v3 v3-result/ 2>/dev/null || true
+          cp V3-IMAGE-SHA256 v3-result/ 2>/dev/null || true
+          cp V3-configfs.diff v3-result/ 2>/dev/null || true
+          cp V3-incremental-build.log v3-result/ 2>/dev/null || true
+          cp kernel/out/uac2/.config v3-result/V3.config 2>/dev/null || true
+          if [ -d kernel/out/uac2 ]; then
+            tar -C kernel/out -I 'zstd -3 -T0' -cf v3-result/out-uac2-v3.tar.zst uac2 || true
+          fi
+          printf 'BASE_V2_ARTIFACT=%s\nKERNEL_SOURCE=%s\nPATCH_SHA256=%s\nWORKFLOW_SHA=%s\n' "$V2_ARTIFACT_ID" "$KERNEL_COMMIT" "$PATCH_SHA256" "$GITHUB_SHA" > v3-result/BUILD-IDENTITY.txt
+
+      - name: Upload V3 incremental result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v3-a2min-${{ github.run_id }}
+          path: v3-result/
+          retention-days: 30
+          if-no-files-found: error
