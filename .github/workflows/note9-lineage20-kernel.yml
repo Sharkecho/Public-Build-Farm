@@ -78,32 +78,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # The phone's /proc/config.gz, captured read-only from the running ROM.
-          # Fetched from the release rather than vendored into this repository: it
-          # is 164 KB of machine-generated text that changes on every ROM build,
-          # and keeping it in git would mean a commit for every nightly. The gate
-          # therefore downloads the exact copy this run compares against and
-          # records its sha256, so the comparison is still pinned.
           mkdir -p evidence baseline-ref
           echo "ROM_CONFIG_REF=release:lo20-baseline-ref/rom-proc-config.txt"
-          if gh release download lo20-baseline-ref \
-                --repo "$GITHUB_REPOSITORY" \
-                --pattern "rom-proc-config.txt" \
-                --dir baseline-ref --clobber; then
-            echo "ROM_CONFIG_SOURCE=release lo20-baseline-ref"
-          else
-            echo "ROM_CONFIG_SOURCE=checkout fallback"
-            test -f "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" || {
-              echo "ROM_CONFIG_MISSING (release download failed and no committed copy)"
-              exit 1
-            }
-            cp "$GITHUB_WORKSPACE/$ROM_CONFIG_REF" baseline-ref/rom-proc-config.txt
-          fi
+
+          # Resolve the release asset through GitHub's API using the runner token.
+          # This avoids browser-release redirects and makes the exact asset ID,
+          # size and digest auditable before the build starts.
+          ASSET_JSON="$(gh api repos/$GITHUB_REPOSITORY/releases/tags/lo20-baseline-ref)"
+          ASSET_ID="$(printf '%s' "$ASSET_JSON" | jq -r '.assets[] | select(.name=="rom-proc-config.txt") | .id')"
+          ASSET_SIZE="$(printf '%s' "$ASSET_JSON" | jq -r '.assets[] | select(.name=="rom-proc-config.txt") | .size')"
+          ASSET_DIGEST="$(printf '%s' "$ASSET_JSON" | jq -r '.assets[] | select(.name=="rom-proc-config.txt") | .digest')"
+          test -n "$ASSET_ID" && test "$ASSET_ID" != "null" || { echo "ROM_CONFIG_ASSET_MISSING"; exit 1; }
+          test "$ASSET_SIZE" = "164034" || { echo "ROM_CONFIG_SIZE_UNEXPECTED=$ASSET_SIZE"; exit 1; }
+          test "$ASSET_DIGEST" = "sha256:c291d1509b7a063b7f51113e0858bdeda94adcb5bb0698414008fbb66aa6b3d9" || {
+            echo "ROM_CONFIG_RELEASE_DIGEST_UNEXPECTED=$ASSET_DIGEST"; exit 1; }
+
+          gh api -H "Accept: application/octet-stream" \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" > baseline-ref/rom-proc-config.txt
+
           REF=baseline-ref/rom-proc-config.txt
-          echo "ROM_CONFIG_REF_SHA256=$(sha256sum "$REF" | awk '{print $1}')"
+          ACTUAL_SIZE="$(stat -c '%s' "$REF")"
+          ACTUAL_SHA="$(sha256sum "$REF" | awk '{print $1}')"
+          test "$ACTUAL_SIZE" = "164034" || { echo "ROM_CONFIG_DOWNLOADED_SIZE_FAIL=$ACTUAL_SIZE"; exit 1; }
+          test "$ACTUAL_SHA" = "c291d1509b7a063b7f51113e0858bdeda94adcb5bb0698414008fbb66aa6b3d9" || {
+            echo "ROM_CONFIG_DOWNLOADED_SHA_FAIL=$ACTUAL_SHA"; exit 1; }
+
+          # Make the later config-comparison path deterministic.
+          cp "$REF" "$GITHUB_WORKSPACE/$ROM_CONFIG_REF"
+          echo "ROM_CONFIG_SOURCE=release-api lo20-baseline-ref"
+          echo "ROM_CONFIG_ASSET_ID=$ASSET_ID"
+          echo "ROM_CONFIG_REF_SHA256=$ACTUAL_SHA"
           echo "ROM_CONFIG_REF_LINES=$(grep -c '^CONFIG' "$REF")"
-          # The baseline this gate compares against must not have UAC2; if the ROM
-          # ever ships with it enabled, the premise of a one-line diff is gone.
           grep -E "^# CONFIG_USB_CONFIGFS_F_UAC2 is not set$" "$REF" >/dev/null || {
             echo "ROM_CONFIG_PRECONDITION=FAIL (ROM does not have F_UAC2 disabled)"
             exit 1
