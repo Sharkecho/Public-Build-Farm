@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
@@ -30,13 +31,24 @@ jobs:
           git checkout --detach "$KERNEL_COMMIT"
           test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
 
+      - name: Restore toolchain cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            compiler/clang-r416183
+            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          key: note9-v1gold-toolchains-r416183-apollo49-v1
+
       - name: Install pinned AOSP Clang
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$GITHUB_WORKSPACE/compiler/clang-r416183"
           curl -fL --retry 4 "$CLANG_URL" | tar -xz -C "$GITHUB_WORKSPACE/compiler/clang-r416183"
           "$GITHUB_WORKSPACE/compiler/clang-r416183/bin/clang" --version
 
       - name: Import Apollo GCC 4.9 companion toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           ARCHIVE="$RUNNER_TEMP/apollo.tar.gz"
@@ -146,6 +158,13 @@ jobs:
           cp out/baseline/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.baseline"
           sha256sum "$GITHUB_WORKSPACE/Image.baseline"
 
+      - name: Save V1 GOLD baseline checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v1gold-baseline-${{ github.sha }}
+          path: Image.baseline
+          retention-days: 30
+
       - name: Build UAC2 variant from same verified source
         working-directory: kernel
         env:
@@ -189,6 +208,24 @@ jobs:
           test -s out/uac2/arch/arm64/boot/Image
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
           sha256sum "$GITHUB_WORKSPACE/Image.uac2"
+
+      - name: Save V2 KERNEL_OUT checkpoint
+        if: ${{ always() }}
+        run: |
+          mkdir -p kernel-out-checkpoint
+          if [ -d kernel/out/uac2 ]; then
+            tar -C kernel/out -I 'zstd -3 -T0' -cf kernel-out-checkpoint/out-uac2.tar.zst uac2 || true
+          fi
+          cp kernel/out/uac2/.config kernel-out-checkpoint/V2.config 2>/dev/null || true
+          printf 'KERNEL_SOURCE=%s\nWORKFLOW_SHA=%s\n' "$KERNEL_COMMIT" "$GITHUB_SHA" > kernel-out-checkpoint/IDENTITY.txt
+      - name: Upload V2 KERNEL_OUT checkpoint
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-kernel-out-${{ github.run_id }}
+          path: kernel-out-checkpoint/
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Package safe kernel payload
         run: |
