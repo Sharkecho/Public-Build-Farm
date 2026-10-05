@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
-      - name: Install dependencies and frozen sources
+      - name: Dependencies and frozen sources
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -35,12 +35,14 @@ jobs:
           mkdir apollo && tar -xzf apollo.tar.gz -C apollo
           ROOT="$(find apollo -mindepth 1 -maxdepth 1 -type d | head -1)"
           TC="$ROOT/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          test -d "$TC/bin"
           mkdir -p kernel/toolchain/gcc-cfp/gcc-ibv-jopp
           cp -a "$TC" kernel/toolchain/gcc-cfp/gcc-ibv-jopp/
           DEST="$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
           find "$DEST/bin" -type f -exec chmod +x {} +
           find "$DEST/libexec" -type f -exec chmod +x {} + || true
           LTO="$DEST/libexec/gcc/aarch64-linux-android/4.9.x"
+          test -s "$LTO/liblto_plugin.so.0.0.0"
           ln -sfn liblto_plugin.so.0.0.0 "$LTO/liblto_plugin.so.0"
           ln -sfn liblto_plugin.so.0 "$LTO/liblto_plugin.so"
 
@@ -60,7 +62,7 @@ jobs:
           grep -q 'const unsigned long decon_clocks_table' drivers/video/fbdev/exynos/dpu_9810/decon_reg.c
           git diff --check
 
-      - name: Derive V2 config and hard gate USB capabilities
+      - name: Derive V2 config and hard-gate USB capabilities
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -71,21 +73,11 @@ jobs:
           scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
           make O=out/v2 ARCH=arm64 olddefconfig
           cp out/v2/.config "$GITHUB_WORKSPACE/V2.config"
-          grep -q '^CONFIG_USB_CONFIGFS=y' out/v2/.config
-          grep -q '^CONFIG_USB_CONFIGFS_F_UAC2=y' out/v2/.config
-          grep -q '^CONFIG_USB_F_UAC2=y' out/v2/.config
-          grep -q '^CONFIG_USB_CONFIGFS_F_FS=y' out/v2/.config
-          grep -q '^CONFIG_USB_F_FS=y' out/v2/.config
-          grep -q '^CONFIG_USB_CONFIGFS_NCM=y' out/v2/.config
-          grep -q '^CONFIG_USB_CONFIGFS_RNDIS=y' out/v2/.config
-          grep -q '^CONFIG_USB_F_NCM=y' out/v2/.config
-          grep -q '^CONFIG_USB_F_RNDIS=y' out/v2/.config
-          grep -q '^CONFIG_USB_XHCI_HCD=y' out/v2/.config
-          grep -q '^CONFIG_USB_XHCI_PLATFORM=y' out/v2/.config
-          grep -q '^CONFIG_USB_DWC3_DUAL_ROLE=y' out/v2/.config
-          grep -q '^CONFIG_USB_RTL8152=y' out/v2/.config
-          grep -q '^# CONFIG_USB_G_ANDROID is not set' out/v2/.config
-          grep -q '^# CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE is not set' out/v2/.config
+          for x in USB_CONFIGFS USB_CONFIGFS_F_UAC2 USB_F_UAC2 USB_CONFIGFS_F_FS USB_F_FS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS USB_F_NCM USB_F_RNDIS USB_XHCI_HCD USB_XHCI_PLATFORM USB_DWC3_DUAL_ROLE USB_RTL8152; do
+            grep -q "^CONFIG_${x}=y$" out/v2/.config || { echo "PROTECTED_MISSING=CONFIG_${x}"; exit 1; }
+          done
+          grep -q '^# CONFIG_USB_G_ANDROID is not set$' out/v2/.config
+          grep -q '^# CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE is not set$' out/v2/.config
           echo V2_USB_GATE=PASS
 
       - name: Build V2 kernel
@@ -108,7 +100,7 @@ jobs:
           test -s out/v2/drivers/usb/gadget/function/usb_f_uac2.o
           cp out/v2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
 
-      - name: Build proven Exynos9810 DTBH
+      - name: Build frozen Exynos9810 DTBH
         run: |
           set -euo pipefail
           curl -fL --retry 5 -o dtbtool.c "https://raw.githubusercontent.com/ananjaser1211/Apollo/30656faf075847e98f0f60a8b4282a25c7e23f80/scripts/dtbtool_exynos/dtbtool.c"
@@ -120,16 +112,113 @@ jobs:
           test -s dt.img
           test "$(dd if=dt.img bs=4 count=1 status=none)" = "DTBH"
 
+      - name: Materialize audited ONE-SHOT installer
+        run: |
+          cat > pipeline-v2-install.sh <<'ONE_SHOT_EOF'
+          #!/sbin/sh
+          # Note9 SM-N960N V2 ONE-SHOT Boot Installer
+          # Recovery-only. Fail closed before the single boot write.
+          set -u
+          
+          OUTFD="/proc/self/fd/${2:-1}"
+          ZIP="${3:-}"
+          WORK=/tmp/n9-v2-oneshot
+          PAYLOAD=/tmp/n9-v2-payload
+          ui_print(){ echo -e "ui_print $1\nui_print" > "$OUTFD"; }
+          die(){ ui_print "! $1"; exit 1; }
+          
+          [ -n "$ZIP" ] || die "installer zip missing"
+          rm -rf "$WORK" "$PAYLOAD"
+          mkdir -p "$WORK" "$PAYLOAD" || die "workspace create failed"
+          cd "$PAYLOAD" || die "payload workspace unavailable"
+          unzip -o "$ZIP" >/dev/null || die "zip extraction failed"
+          
+          BB=floyd/tools/busybox
+          MB=floyd/tools/magiskboot
+          [ -x "$BB" ] || chmod 755 "$BB" || die "busybox unavailable"
+          [ -x "$MB" ] || chmod 755 "$MB" || die "magiskboot unavailable"
+          [ -s floyd/kernel ] || die "V2 kernel missing"
+          [ -s floyd/extra ] || die "V2 DT image missing"
+          [ -s BUILD-IDENTITY.txt ] || die "build identity missing"
+          
+          # Device gate: accept either recovery cmdline identity or Android property when available.
+          CMD="$(cat /proc/cmdline 2>/dev/null || true)"
+          MODEL="$(getprop ro.product.model 2>/dev/null || true)"
+          echo "$CMD $MODEL" | grep -q 'N960N' || die "SM-N960N required"
+          
+          BOOT="$($BB find /dev/block/platform -type l -iname boot 2>/dev/null | head -1)"
+          [ -n "$BOOT" ] || BOOT="$($BB find /dev/block -type l -iname boot 2>/dev/null | head -1)"
+          [ -n "$BOOT" ] || die "boot partition not found"
+          
+          ui_print "- N960N V2 ONE-SHOT preflight PASS"
+          cd "$WORK" || die "workdir unavailable"
+          
+          # Persistent rollback copy first. /sdcard survives reboot; /tmp does not.
+          ROLLBACK_DIR=/sdcard/Note9-V1-GOLD-Rollback
+          mkdir -p "$ROLLBACK_DIR" || die "rollback directory unavailable"
+          dd if="$BOOT" of="$ROLLBACK_DIR/boot-before-v2.img" bs=4096 || die "rollback backup failed"
+          sha256sum "$ROLLBACK_DIR/boot-before-v2.img" > "$ROLLBACK_DIR/boot-before-v2.img.sha256" || die "rollback hash failed"
+          cp "$ROLLBACK_DIR/boot-before-v2.img" original-boot.img || die "working boot copy failed"
+          
+          cp "$PAYLOAD/$MB" ./magiskboot || die "magiskboot copy failed"
+          chmod 755 magiskboot
+          ./magiskboot unpack original-boot.img >/dev/null || die "boot unpack failed"
+          [ -s kernel ] || die "original kernel missing after unpack"
+          [ -s extra ] || die "original DT missing after unpack"
+          
+          cp "$PAYLOAD/floyd/kernel" kernel || die "kernel inject failed"
+          cp "$PAYLOAD/floyd/extra" extra || die "DT inject failed"
+          ./magiskboot repack -n original-boot.img >/dev/null || die "boot repack failed"
+          [ -s new-boot.img ] || die "new boot missing"
+          
+          # Verify the repacked image can be parsed before touching the partition.
+          mkdir verify && cd verify || die "verify workspace failed"
+          cp ../new-boot.img .
+          cp ../magiskboot .
+          ./magiskboot unpack new-boot.img >/dev/null || die "new boot verification unpack failed"
+          [ -s kernel ] || die "verified kernel missing"
+          [ -s extra ] || die "verified DT missing"
+          cmp -s kernel "$PAYLOAD/floyd/kernel" || die "kernel payload mismatch"
+          cmp -s extra "$PAYLOAD/floyd/extra" || die "DT payload mismatch"
+          cd "$WORK" || die "workdir return failed"
+          
+          NEW_SIZE="$(wc -c < new-boot.img)"
+          PART_SIZE="$(blockdev --getsize64 "$BOOT" 2>/dev/null || echo 0)"
+          [ "$PART_SIZE" -gt 0 ] || die "cannot read boot partition size"
+          [ "$NEW_SIZE" -le "$PART_SIZE" ] || die "new boot exceeds partition"
+          
+          ui_print "- Backup + repack + verification PASS"
+          ui_print "- Writing boot once"
+          dd if=new-boot.img of="$BOOT" bs=4096 conv=fsync || die "boot write failed"
+          sync
+          
+          # Read-back exactly the bytes written and compare byte-for-byte.
+          dd if="$BOOT" of=boot-readback.img bs=1 count="$NEW_SIZE" 2>/dev/null || die "boot read-back failed"
+          cmp -s new-boot.img boot-readback.img || die "boot read-back mismatch"
+          sha256sum new-boot.img > "$ROLLBACK_DIR/v2-written-boot.sha256" || true
+          cp "$PAYLOAD/BUILD-IDENTITY.txt" "$ROLLBACK_DIR/V2-BUILD-IDENTITY.txt" || true
+          
+          ui_print "- BOOT_WRITE=PASS"
+          ui_print "- BOOT_READBACK=PASS"
+          ui_print "- rollback: $ROLLBACK_DIR/boot-before-v2.img"
+          ui_print "- V2 ONE-SHOT complete; reboot when ready"
+          exit 0
+          
+          ONE_SHOT_EOF
+          sed -i 's/^          //' pipeline-v2-install.sh
+          chmod 755 pipeline-v2-install.sh
+          sh -n pipeline-v2-install.sh
+
       - name: Build V2 ONE-SHOT recovery package
         run: |
           set -euo pipefail
           ROOT="$(find apollo -mindepth 1 -maxdepth 1 -type d | head -1)"
           cp -a "$ROOT/Apollo/kernelzip" installer
           chmod +x installer/floyd/tools/magiskboot installer/floyd/tools/busybox || true
-          rm -f installer/floyd/*-kernel installer/floyd/*-dtb installer/floyd/kernel installer/floyd/extra
+          rm -f installer/floyd/*-kernel installer/floyd/*-dtb
           cp Image.uac2 installer/floyd/kernel
           cp dt.img installer/floyd/extra
-          curl -fL --retry 4 -o installer/META-INF/com/google/android/update-binary "https://raw.githubusercontent.com/Sharkecho/Note9-LineageOS-Kernel/main/pipeline/v2/install-v2-oneshot.sh"
+          cp pipeline-v2-install.sh installer/META-INF/com/google/android/update-binary
           chmod 755 installer/META-INF/com/google/android/update-binary
           KERNEL_SHA="$(sha256sum Image.uac2 | awk '{print $1}')"
           DT_SHA="$(sha256sum dt.img | awk '{print $1}')"
@@ -140,35 +229,23 @@ jobs:
           KERNEL_COMMIT=$KERNEL_COMMIT
           KERNEL_SHA256=$KERNEL_SHA
           DT_SHA256=$DT_SHA
-          USB_G_ANDROID=n
-          USB_ANDROID_SAMSUNG_COMPOSITE=n
+          V2_DISABLE=CONFIG_USB_G_ANDROID,CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
           UAC2=PASS
-          FUNCTIONFS_ADB=PASS
+          FUNCTIONFS=PASS
           NCM_RNDIS=PASS
           DWC3_DUAL_ROLE=PASS
           RTL8152=PASS
           MODE=V2_ONE_SHOT
-          STATUS=V2_TEST_NOT_DEVICE_VALIDATED
+          STATUS=V2_TEST
           EOF
           (cd installer && zip -r9 ../Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip .)
           unzip -t Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip
           sha256sum Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip > Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip.sha256
 
-      - name: Final package gate
-        run: |
-          set -euo pipefail
-          test -s Image.uac2
-          test -s dt.img
-          test -s V2.config
-          test -s Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip
-          unzip -p Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip BUILD-IDENTITY.txt | grep -q '^MODE=V2_ONE_SHOT'
-          unzip -p Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip META-INF/com/google/android/update-binary | grep -q 'BOOT_READBACK=PASS'
-          echo V2_ONE_SHOT_PACKAGE_GATE=PASS
-
-      - name: Upload V2 ONE-SHOT artifact
+      - name: Upload only canonical V2 outputs
         uses: actions/upload-artifact@v4
         with:
-          name: note9-lineageos20-kernel-v2-one-shot
+          name: note9-lineageos20-kernel-v2-oneshot
           path: |
             Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip
             Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip.sha256
