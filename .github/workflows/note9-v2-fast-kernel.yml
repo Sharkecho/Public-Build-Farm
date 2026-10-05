@@ -1,0 +1,188 @@
+name: Note9 V2 FAST Kernel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
+  KERNEL_COMMIT: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/llvm-r416183/clang-r416183.tar.gz
+
+jobs:
+  build-v2:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Dependencies and frozen sources
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev python3 rsync unzip zip zstd curl cpio libfdt-dev
+          git clone --filter=blob:none "$KERNEL_REPO" kernel
+          cd kernel
+          git fetch --depth=1 origin "$KERNEL_COMMIT"
+          git checkout --detach "$KERNEL_COMMIT"
+          test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
+          cd ..
+          mkdir -p compiler/clang-r416183
+          curl -fL --retry 4 "$CLANG_URL" | tar -xz -C compiler/clang-r416183
+          curl -fL --retry 5 -o apollo.tar.gz "https://github.com/Redminote11tech/exynos9810-kernel/archive/refs/heads/duhan-%284.9.337%29.tar.gz"
+          mkdir apollo && tar -xzf apollo.tar.gz -C apollo
+          ROOT="$(find apollo -mindepth 1 -maxdepth 1 -type d | head -1)"
+          TC="$ROOT/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          mkdir -p kernel/toolchain/gcc-cfp/gcc-ibv-jopp
+          cp -a "$TC" kernel/toolchain/gcc-cfp/gcc-ibv-jopp/
+          DEST="$GITHUB_WORKSPACE/kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9"
+          find "$DEST/bin" -type f -exec chmod +x {} +
+          find "$DEST/libexec" -type f -exec chmod +x {} + || true
+          LTO="$DEST/libexec/gcc/aarch64-linux-android/4.9.x"
+          ln -sfn liblto_plugin.so.0.0.0 "$LTO/liblto_plugin.so.0"
+          ln -sfn liblto_plugin.so.0 "$LTO/liblto_plugin.so"
+
+      - name: Apply frozen DPU compatibility patch
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c")
+          s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+          PY
+          grep -q 'const unsigned long decon_clocks_table' drivers/video/fbdev/exynos/dpu_9810/decon_reg.c
+
+      - name: Restore authoritative V1 config and derive V2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir audit
+          gh run download 37322657420 --repo "$GITHUB_REPOSITORY" --name note9-v2-preflight-config-audit --dir audit
+          V1="$(find audit -type f -name V1.config | head -1)"
+          test -s "$V1"
+          mkdir -p kernel/out/v2
+          cp "$V1" kernel/out/v2/.config
+          cp "$V1" V1.config
+          cd kernel
+          scripts/config --file out/v2/.config -d USB_G_ANDROID
+          scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
+          make O=out/v2 ARCH=arm64 olddefconfig
+          cp out/v2/.config "$GITHUB_WORKSPACE/V2.config"
+
+      - name: V2 config hard gate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          def cfg(path):
+              d={}
+              for l in Path(path).read_text().splitlines():
+                  if l.startswith("CONFIG_") and "=" in l:
+                      k,v=l.split("=",1); d[k]=v
+                  elif l.startswith("# CONFIG_") and l.endswith(" is not set"):
+                      d[l.split()[1]]="n"
+              return d
+          a,b=cfg("V1.config"),cfg("V2.config")
+          changes={k:(a.get(k),b.get(k)) for k in sorted(set(a)|set(b)) if a.get(k)!=b.get(k)}
+          Path("V1_V2_CONFIG_DIFF.txt").write_text("\n".join(f"{k}: {x} -> {y}" for k,(x,y) in changes.items())+"\n")
+          allowed={
+            "CONFIG_USB_G_ANDROID","CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE",
+            "CONFIG_USB_ANDROID_SAMSUNG_MTP","CONFIG_USB_DUN_SUPPORT",
+            "CONFIG_USB_RNDIS_MULTIPACKET_WITH_TIMER","CONFIG_USB_NCM_SUPPORT_MTU_CHANGE",
+            "CONFIG_USB_ANDROID_RNDIS_DWORD_ALIGNED"
+          }
+          bad=set(changes)-allowed
+          assert not bad, f"UNAPPROVED_CONFIG_DRIFT={sorted(bad)}"
+          required={
+            "CONFIG_USB_CONFIGFS":"y","CONFIG_USB_CONFIGFS_F_UAC2":"y","CONFIG_USB_F_UAC2":"y",
+            "CONFIG_USB_CONFIGFS_F_FS":"y","CONFIG_USB_F_FS":"y",
+            "CONFIG_USB_CONFIGFS_NCM":"y","CONFIG_USB_CONFIGFS_RNDIS":"y",
+            "CONFIG_USB_F_NCM":"y","CONFIG_USB_F_RNDIS":"y",
+            "CONFIG_USB_XHCI_HCD":"y","CONFIG_USB_XHCI_PLATFORM":"y",
+            "CONFIG_USB_DWC3_DUAL_ROLE":"y","CONFIG_USB_RTL8152":"y"
+          }
+          missing={k:(v,b.get(k)) for k,v in required.items() if b.get(k)!=v}
+          assert not missing, f"PROTECTED_MISSING={missing}"
+          assert b.get("CONFIG_USB_G_ANDROID")=="n"
+          assert b.get("CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE")=="n"
+          print("V2_CONFIG_GATE=PASS")
+          print(Path("V1_V2_CONFIG_DIFF.txt").read_text())
+          PY
+
+      - name: FAST build V2 kernel and DTBs
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          make O=out/v2 ARCH=arm64 -j"$(nproc)"
+          test -s out/v2/arch/arm64/boot/Image
+          test -s out/v2/drivers/usb/gadget/function/f_uac2.o
+          test -s out/v2/drivers/usb/gadget/function/usb_f_uac2.o
+          cp out/v2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2.v2"
+          mkdir -p "$GITHUB_WORKSPACE/dtbs-v2"
+          find out/v2/arch/arm64/boot/dts/exynos -maxdepth 1 -type f -name 'exynos9810-crownlte_*.dtb' -exec cp {} "$GITHUB_WORKSPACE/dtbs-v2/" \;
+          test "$(find "$GITHUB_WORKSPACE/dtbs-v2" -name '*.dtb' | wc -l)" -gt 0
+
+      - name: Build frozen Exynos9810 DTBH image
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 -o dtbtool.c "https://raw.githubusercontent.com/ananjaser1211/Apollo/30656faf075847e98f0f60a8b4282a25c7e23f80/scripts/dtbtool_exynos/dtbtool.c"
+          gcc -O2 dtbtool.c -lfdt -o dtbtool-exynos
+          mapfile -t DTBS < <(find dtbs-v2 -type f -name '*.dtb' | sort)
+          ./dtbtool-exynos --pagesize 2048 --platform 0x50a6 --subtype 0x217584da -o dt.v2.img "${DTBS[@]}"
+          test -s dt.v2.img
+          test "$(dd if=dt.v2.img bs=4 count=1 status=none)" = "DTBH"
+
+      - name: Final identity and package
+        run: |
+          set -euo pipefail
+          sha256sum Image.uac2.v2 > Image.uac2.v2.sha256
+          sha256sum dt.v2.img > dt.v2.img.sha256
+          mkdir package
+          cp Image.uac2.v2 Image.uac2.v2.sha256 dt.v2.img dt.v2.img.sha256 V2.config V1_V2_CONFIG_DIFF.txt package/
+          cat > package/V2-MANIFEST.txt <<EOF
+          DEVICE=SM-N960N
+          CODENAME=crownlte
+          ROM=LineageOS 20
+          BASE=V1_GOLD_DEVICE_BOOT_VALIDATED
+          KERNEL_COMMIT=$KERNEL_COMMIT
+          V2_DISABLE=CONFIG_USB_G_ANDROID,CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+          CONFIG_GATE=PASS
+          UAC2=PASS
+          FUNCTIONFS=PASS
+          NCM_RNDIS=PASS
+          USB_HOST=PASS
+          RTL8152=PASS
+          STATUS=V2_TEST_NOT_YET_DEVICE_VALIDATED
+          EOF
+          (cd package && zip -r9 ../Note9-N960N-Lineage20-UAC2-V2-TEST.zip .)
+
+      - name: Upload V2 TEST artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-n960n-lineage20-uac2-v2-test
+          path: |
+            Note9-N960N-Lineage20-UAC2-V2-TEST.zip
+            Image.uac2.v2
+            Image.uac2.v2.sha256
+            dt.v2.img
+            dt.v2.img.sha256
+            V2.config
+            V1_V2_CONFIG_DIFF.txt
+          retention-days: 30
