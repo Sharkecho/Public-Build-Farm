@@ -54,26 +54,31 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c"); s=p.read_text()
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c")
+          s=p.read_text()
           s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
           s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
           s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
-          # ConfigFS uses Samsung USB log symbols under CONFIG_USB_NOTIFY_PROC_LOG.
-          # Legacy Samsung composite previously supplied this header indirectly.
-          # Include it explicitly so ConfigFS remains independent of legacy composite.
-          inc='#include <linux/usblog_proc_notify.h>'
+          p.write_text(s)
+
+          p=Path("drivers/usb/gadget/configfs.c")
+          s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"
+          anchor="#include <linux/soc/samsung/exynos-soc.h>"
           if inc not in s:
-              anchor='#include <linux/soc/samsung/exynos-soc.h>'
               if anchor not in s:
-                  raise SystemExit('configfs include anchor missing')
-              s=s.replace(anchor, anchor+'\\n'+inc)
+                  raise SystemExit("configfs include anchor missing")
+              s=s.replace(anchor, anchor+"\\n"+inc)
           p.write_text(s)
           PY
-          grep -q '^#include <linux/usblog_proc_notify.h>          cp "$GITHUB_WORKSPACE/V1.config" out/v2/.config
+          grep -q '^#include <linux/usblog_proc_notify.h>$' drivers/usb/gadget/configfs.c
+          mkdir -p out/v2
+          cp "$GITHUB_WORKSPACE/V1.config" out/v2/.config
           scripts/config --file out/v2/.config -d USB_G_ANDROID
           scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
           make O=out/v2 ARCH=arm64 olddefconfig
           cp out/v2/.config "$GITHUB_WORKSPACE/V2.config"
+
       - name: Build V2 kernel
         working-directory: kernel
         env:
