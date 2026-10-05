@@ -62,13 +62,24 @@ jobs:
           grep -q 'const unsigned long decon_clocks_table' drivers/video/fbdev/exynos/dpu_9810/decon_reg.c
           git diff --check
 
+      - name: Restore authoritative V1 config checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p audit
+          gh run download 37322657420 --repo "$GITHUB_REPOSITORY" --name note9-v2-preflight-config-audit --dir audit
+          V1="$(find audit -type f -name V1.config | head -1)"
+          test -s "$V1"
+          cp "$V1" V1.config
+          sha256sum V1.config | tee V1.config.sha256
+
       - name: Derive V2 config and hard-gate USB capabilities
         working-directory: kernel
         run: |
           set -euo pipefail
           mkdir -p out/v2
-          make O=out/v2 ARCH=arm64 "$DEFCONFIG"
-          scripts/config --file out/v2/.config -e USB_CONFIGFS_F_UAC2
+          cp "$GITHUB_WORKSPACE/V1.config" out/v2/.config
           scripts/config --file out/v2/.config -d USB_G_ANDROID
           scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
           make O=out/v2 ARCH=arm64 olddefconfig
@@ -251,5 +262,7 @@ jobs:
             Note9-LineageOS20-Kernel-V2-ONE-SHOT.zip.sha256
             Image.uac2
             dt.img
+            V1.config
+            V1.config.sha256
             V2.config
           retention-days: 30
