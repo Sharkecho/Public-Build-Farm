@@ -71,16 +71,27 @@ jobs:
           find out/dtb/arch/arm64/boot/dts/exynos -maxdepth 1 -type f -name 'exynos9810-crownlte_*.dtb' -exec cp {} "$GITHUB_WORKSPACE/dtbs/" \;
           test "$(find "$GITHUB_WORKSPACE/dtbs" -type f -name '*.dtb' | wc -l)" -gt 0
 
-      - name: Build official LineageOS dtbhtoolExynos and dt.img
+      - name: Build proven Exynos9810 DT image
         run: |
           set -euo pipefail
-          git clone --depth=1 --branch lineage-20 https://github.com/LineageOS/android_hardware_samsung hardware-samsung
           sudo apt-get install -y libfdt-dev
-          cd hardware-samsung/dtbhtool
-          gcc -O2 -Ilibdtbimg -I. mkdtbimg.c dtbimg.c -lfdt -o "$GITHUB_WORKSPACE/dtbhtoolExynos"
-          "$GITHUB_WORKSPACE/dtbhtoolExynos" -o "$GITHUB_WORKSPACE/dt.img" -s 2048 "$GITHUB_WORKSPACE/dtbs"
-          test -s "$GITHUB_WORKSPACE/dt.img"
-          sha256sum "$GITHUB_WORKSPACE/dt.img" > "$GITHUB_WORKSPACE/dt.img.sha256"
+          curl -fL --retry 5 \
+            -o dtbtool.c \
+            "https://raw.githubusercontent.com/ananjaser1211/Apollo/30656faf075847e98f0f60a8b4282a25c7e23f80/scripts/dtbtool_exynos/dtbtool.c"
+          gcc -O2 dtbtool.c -lfdt -o dtbtool-exynos
+          ./dtbtool-exynos --help >/dev/null 2>&1 || true
+          mapfile -t DTBS < <(find "$GITHUB_WORKSPACE/dtbs" -maxdepth 1 -type f -name '*.dtb' | sort)
+          test "${#DTBS[@]}" -gt 0
+          ./dtbtool-exynos \
+            --pagesize 2048 \
+            --platform 0x50a6 \
+            --subtype 0x217584da \
+            -o dt.img "${DTBS[@]}"
+          test -s dt.img
+          test "$(dd if=dt.img bs=4 count=1 status=none)" = "DTBH"
+          sha256sum dt.img > dt.img.sha256
+          ls -lh dt.img
+          cat dt.img.sha256
 
       - name: Package verified kernel and Lineage DT image
         run: |
