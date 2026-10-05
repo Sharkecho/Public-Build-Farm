@@ -58,9 +58,19 @@ jobs:
           if [ -d "$DEST/libexec" ]; then
             find "$DEST/libexec" -type f -exec chmod +x {} +
           fi
+          # GitHub tar archives can materialize the GCC plugin symlink without
+          # the unversioned name expected by -fuse-linker-plugin. Recreate the
+          # canonical link from the shipped versioned plugin.
+          LTO_DIR="$DEST/libexec/gcc/aarch64-linux-android/4.9.x"
+          test -s "$LTO_DIR/liblto_plugin.so.0.0.0"
+          ln -sfn liblto_plugin.so.0.0.0 "$LTO_DIR/liblto_plugin.so.0"
+          ln -sfn liblto_plugin.so.0 "$LTO_DIR/liblto_plugin.so"
+          chmod +x "$LTO_DIR"/cc1 "$LTO_DIR"/cc1plus "$LTO_DIR"/collect2 "$LTO_DIR"/lto-wrapper "$LTO_DIR"/lto1
           GCC="$DEST/bin/aarch64-linux-android-gcc"
           test -x "$GCC"
+          test -e "$LTO_DIR/liblto_plugin.so"
           "$GCC" --version
+          "$GCC" -print-file-name=liblto_plugin.so
 
       - name: Build crownlte baseline using mature out-of-tree pattern
         working-directory: kernel
