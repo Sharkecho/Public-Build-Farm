@@ -984,7 +984,13 @@ jobs:
           ui(){ echo "ui_print $*" > /proc/self/fd/$OUTFD; echo "ui_print" > /proc/self/fd/$OUTFD; }
           ui "Note9-01 UAC2 V3 / SM-N960N"
           MODEL="$(getprop ro.product.model 2>/dev/null || true)"
-          [ "$MODEL" = "SM-N960N" ] || { ui "ERROR: device=$MODEL, expected SM-N960N"; exit 1; }
+          DEVICE="$(getprop ro.product.device 2>/dev/null || true)"
+          PRODUCT="$(getprop ro.build.product 2>/dev/null || true)"
+          case "$MODEL:$DEVICE:$PRODUCT" in
+            SM-N960N:*|*:crownlteks:*|*:crownlte:*) ;;
+            *) ui "ERROR: unsupported device model=$MODEL device=$DEVICE product=$PRODUCT"; exit 1 ;;
+          esac
+          ui "Device verified: model=$MODEL device=$DEVICE product=$PRODUCT"
           BOOT=/dev/block/by-name/BOOT
           [ -b "$BOOT" ] || { ui "ERROR: BOOT partition missing"; exit 1; }
           TMP=/tmp/note9-uac2-v3-boot.img
