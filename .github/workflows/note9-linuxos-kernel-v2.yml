@@ -74,7 +74,7 @@ jobs:
           cp "$V1" V1.config
           sha256sum V1.config | tee V1.config.sha256
 
-      - name: Derive V2 config and hard-gate USB capabilities
+      - name: Derive V2 config and audit USB capabilities
         working-directory: kernel
         run: |
           set -euo pipefail
@@ -84,12 +84,65 @@ jobs:
           scripts/config --file out/v2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
           make O=out/v2 ARCH=arm64 olddefconfig
           cp out/v2/.config "$GITHUB_WORKSPACE/V2.config"
-          for x in USB_CONFIGFS USB_CONFIGFS_F_UAC2 USB_F_UAC2 USB_CONFIGFS_F_FS USB_F_FS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS USB_F_NCM USB_F_RNDIS USB_XHCI_HCD USB_XHCI_PLATFORM USB_DWC3_DUAL_ROLE USB_RTL8152; do
-            grep -q "^CONFIG_${x}=y$" out/v2/.config || { echo "PROTECTED_MISSING=CONFIG_${x}"; exit 1; }
+
+          KEYS="USB_CONFIGFS USB_CONFIGFS_F_UAC2 USB_F_UAC2 USB_CONFIGFS_F_FS USB_F_FS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS USB_F_NCM USB_F_RNDIS USB_XHCI_HCD USB_XHCI_PLATFORM USB_DWC3_DUAL_ROLE USB_RTL8152 USB_G_ANDROID USB_ANDROID_SAMSUNG_COMPOSITE"
+          : > "$GITHUB_WORKSPACE/USB-CAPABILITY-AUDIT.txt"
+          for x in $KEYS; do
+            V1="$(grep -E "^CONFIG_${x}=|^# CONFIG_${x} is not set$" "$GITHUB_WORKSPACE/V1.config" | head -1 || true)"
+            V2="$(grep -E "^CONFIG_${x}=|^# CONFIG_${x} is not set$" out/v2/.config | head -1 || true)"
+            printf '%-42s | V1: %-48s | V2: %s\n' "CONFIG_${x}" "${V1:-ABSENT}" "${V2:-ABSENT}" | tee -a "$GITHUB_WORKSPACE/USB-CAPABILITY-AUDIT.txt"
           done
-          grep -q '^# CONFIG_USB_G_ANDROID is not set$' out/v2/.config
-          grep -q '^# CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE is not set$' out/v2/.config
-          echo V2_USB_GATE=PASS
+          diff -u "$GITHUB_WORKSPACE/V1.config" out/v2/.config > "$GITHUB_WORKSPACE/V1-to-V2.config.diff" || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          def read(p):
+              d={}
+              for line in Path(p).read_text().splitlines():
+                  if line.startswith("CONFIG_") and "=" in line:
+                      k,v=line.split("=",1); d[k]=v
+                  elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+                      d[line.split()[1]]="n"
+              return d
+          v1=read("../V1.config")
+          v2=read("out/v2/.config")
+          protected=[
+              "CONFIG_USB_CONFIGFS","CONFIG_USB_CONFIGFS_F_UAC2","CONFIG_USB_F_UAC2",
+              "CONFIG_USB_CONFIGFS_F_FS","CONFIG_USB_F_FS","CONFIG_USB_CONFIGFS_NCM",
+              "CONFIG_USB_CONFIGFS_RNDIS","CONFIG_USB_F_NCM","CONFIG_USB_F_RNDIS",
+              "CONFIG_USB_XHCI_HCD","CONFIG_USB_XHCI_PLATFORM","CONFIG_USB_DWC3_DUAL_ROLE",
+              "CONFIG_USB_RTL8152"
+          ]
+          bad=[]
+          for k in protected:
+              # Preserve the already device-validated V1 value exactly; do not invent =y.
+              if v1.get(k) is None:
+                  bad.append(f"{k}: absent in authoritative V1")
+              elif v2.get(k) != v1.get(k):
+                  bad.append(f"{k}: V1={v1.get(k)} V2={v2.get(k)}")
+          for k in ("CONFIG_USB_G_ANDROID","CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"):
+              if v2.get(k)!="n":
+                  bad.append(f"{k}: expected n, got {v2.get(k)}")
+          if bad:
+              print("V2_USB_GATE=FAIL")
+              print("\n".join(bad))
+              raise SystemExit(1)
+          print("V2_USB_GATE=PASS")
+          PY
+
+      - name: Save config checkpoint even on gate failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-config-checkpoint
+          path: |
+            V1.config
+            V1.config.sha256
+            V2.config
+            USB-CAPABILITY-AUDIT.txt
+            V1-to-V2.config.diff
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Build V2 kernel
         working-directory: kernel
