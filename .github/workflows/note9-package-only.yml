@@ -29,23 +29,39 @@ jobs:
           echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  $IMG" | sha256sum -c -
           cp "$IMG" Image.uac2
 
-      - name: Export crownlte DTB sources without kernel rebuild
+      - name: Build crownlte DTBs only
         run: |
           set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y device-tree-compiler
           git clone --filter=blob:none https://github.com/LineageOS/android_kernel_samsung_exynos9810 kernel
           cd kernel
           git fetch --depth=1 origin 6a9461f9460ca51d1217e5069a5d5556fcc79e63
           git checkout --detach 6a9461f9460ca51d1217e5069a5d5556fcc79e63
-          mkdir -p "$GITHUB_WORKSPACE/dtb-source"
-          find arch/arm64/boot/dts -type f \( -name 'exynos9810-crownlte*.dts' -o -name 'exynos9810-crownlte*.dtsi' \) -exec cp --parents {} "$GITHUB_WORKSPACE/dtb-source/" \;
-          test "$(find "$GITHUB_WORKSPACE/dtb-source" -type f | wc -l)" -gt 0
+          mkdir -p out/dtb
+          make O=out/dtb ARCH=arm64 exynos9810-crownlte_defconfig
+          make O=out/dtb ARCH=arm64 dtbs -j"$(nproc)"
+          mkdir -p "$GITHUB_WORKSPACE/dtbs"
+          find out/dtb/arch/arm64/boot/dts/exynos -maxdepth 1 -type f -name 'exynos9810-crownlte_*.dtb' -exec cp {} "$GITHUB_WORKSPACE/dtbs/" \;
+          test "$(find "$GITHUB_WORKSPACE/dtbs" -type f -name '*.dtb' | wc -l)" -gt 0
 
-      - name: Package verified kernel and DTB source materials
+      - name: Build official LineageOS dtbhtoolExynos and dt.img
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch lineage-20 https://github.com/LineageOS/android_hardware_samsung hardware-samsung
+          sudo apt-get install -y libfdt-dev
+          cd hardware-samsung/dtbhtool
+          gcc -O2 -Ilibdtbimg -I. mkdtbimg.c dtbimg.c -lfdt -o "$GITHUB_WORKSPACE/dtbhtoolExynos"
+          "$GITHUB_WORKSPACE/dtbhtoolExynos" -o "$GITHUB_WORKSPACE/dt.img" -s 2048 "$GITHUB_WORKSPACE/dtbs"
+          test -s "$GITHUB_WORKSPACE/dt.img"
+          sha256sum "$GITHUB_WORKSPACE/dt.img" > "$GITHUB_WORKSPACE/dt.img.sha256"
+
+      - name: Package verified kernel and Lineage DT image
         run: |
           set -euo pipefail
           mkdir -p package
           cp Image.uac2 package/kernel
-          cp -a dtb-source package/
+          cp dt.img package/dt.img
           cat > package/IDENTITY.txt <<'EOF'
           DEVICE=SM-N960N
           CODENAME=crownlte
@@ -56,7 +72,7 @@ jobs:
           VERIFIED_IMAGE_SHA256=3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6
           UAC2=CONFIG_USB_CONFIGFS_F_UAC2=y
           EOF
-          (cd package && sha256sum kernel > SHA256SUMS)
+          (cd package && sha256sum kernel dt.img > SHA256SUMS)
           zip -r9 Note9-N960N-Lineage20-UAC2-package-materials.zip package
           sha256sum Note9-N960N-Lineage20-UAC2-package-materials.zip > Note9-N960N-Lineage20-UAC2-package-materials.zip.sha256
 
@@ -68,4 +84,6 @@ jobs:
             Note9-N960N-Lineage20-UAC2-package-materials.zip
             Note9-N960N-Lineage20-UAC2-package-materials.zip.sha256
             Image.uac2
+            dt.img
+            dt.img.sha256
           retention-days: 30
