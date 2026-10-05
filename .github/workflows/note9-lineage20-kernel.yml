@@ -81,33 +81,24 @@ jobs:
           mkdir -p evidence baseline-ref
           echo "ROM_CONFIG_REF=release:lo20-baseline-ref/rom-proc-config.txt"
 
-          # Resolve the release asset through GitHub's API using the runner token.
-          # This avoids browser-release redirects and makes the exact asset ID,
-          # size and digest auditable before the build starts.
-          ASSET_JSON="$(gh api repos/$GITHUB_REPOSITORY/releases/tags/lo20-baseline-ref)"
-          ASSET_ID="$(printf '%s' "$ASSET_JSON" | jq -r '.assets[] | select(.name=="rom-proc-config.txt") | .id')"
-          ASSET_SIZE="$(printf '%s' "$ASSET_JSON" | jq -r '.assets[] | select(.name=="rom-proc-config.txt") | .size')"
-          ASSET_DIGEST="$(printf '%s' "$ASSET_JSON" | jq -r '.assets[] | select(.name=="rom-proc-config.txt") | .digest')"
-          test -n "$ASSET_ID" && test "$ASSET_ID" != "null" || { echo "ROM_CONFIG_ASSET_MISSING"; exit 1; }
-          test "$ASSET_SIZE" = "164034" || { echo "ROM_CONFIG_SIZE_UNEXPECTED=$ASSET_SIZE"; exit 1; }
-          test "$ASSET_DIGEST" = "sha256:c291d1509b7a063b7f51113e0858bdeda94adcb5bb0698414008fbb66aa6b3d9" || {
-            echo "ROM_CONFIG_RELEASE_DIGEST_UNEXPECTED=$ASSET_DIGEST"; exit 1; }
-
-          gh api -H "Accept: application/octet-stream" \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" > baseline-ref/rom-proc-config.txt
+          # Download the exact public release asset with curl. The release asset
+          # metadata is already pinned below; no gh CLI auth/redirect behavior is
+          # involved in the byte transfer.
+          URL="https://github.com/Sharkecho/Public-Build-Farm/releases/download/lo20-baseline-ref/rom-proc-config.txt"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 20 \
+            --output baseline-ref/rom-proc-config.txt "$URL"
 
           REF=baseline-ref/rom-proc-config.txt
           ACTUAL_SIZE="$(stat -c '%s' "$REF")"
           ACTUAL_SHA="$(sha256sum "$REF" | awk '{print $1}')"
-          test "$ACTUAL_SIZE" = "164034" || { echo "ROM_CONFIG_DOWNLOADED_SIZE_FAIL=$ACTUAL_SIZE"; exit 1; }
-          test "$ACTUAL_SHA" = "c291d1509b7a063b7f51113e0858bdeda94adcb5bb0698414008fbb66aa6b3d9" || {
-            echo "ROM_CONFIG_DOWNLOADED_SHA_FAIL=$ACTUAL_SHA"; exit 1; }
-
-          # Make the later config-comparison path deterministic.
-          cp "$REF" "$GITHUB_WORKSPACE/$ROM_CONFIG_REF"
-          echo "ROM_CONFIG_SOURCE=release-api lo20-baseline-ref"
-          echo "ROM_CONFIG_ASSET_ID=$ASSET_ID"
+          echo "ROM_CONFIG_DOWNLOADED_SIZE=$ACTUAL_SIZE"
           echo "ROM_CONFIG_REF_SHA256=$ACTUAL_SHA"
+          test "$ACTUAL_SIZE" = "164034" || { echo "ROM_CONFIG_SIZE_FAIL=$ACTUAL_SIZE"; exit 1; }
+          test "$ACTUAL_SHA" = "c291d1509b7a063b7f51113e0858bdeda94adcb5bb0698414008fbb66aa6b3d9" || {
+            echo "ROM_CONFIG_SHA_FAIL=$ACTUAL_SHA"; exit 1; }
+
+          cp "$REF" "$GITHUB_WORKSPACE/$ROM_CONFIG_REF"
+          echo "ROM_CONFIG_SOURCE=public-release lo20-baseline-ref"
           echo "ROM_CONFIG_REF_LINES=$(grep -c '^CONFIG' "$REF")"
           grep -E "^# CONFIG_USB_CONFIGFS_F_UAC2 is not set$" "$REF" >/dev/null || {
             echo "ROM_CONFIG_PRECONDITION=FAIL (ROM does not have F_UAC2 disabled)"
@@ -582,8 +573,12 @@ jobs:
             echo "ROM_KERNEL_SHA256=$ROM_KERNEL_SHA256"
             for m in SOURCE_IDENTITY TOOLCHAIN_IDENTITY BASELINE_BUILD BASELINE_GATE CONFIG_GATE UAC2_BUILD UAC2_CONFIG_VERIFIED; do
               val="(not reached)"
-              grep -h "^$m=" evidence/*.txt evidence/baseline/*.txt evidence/uac2/*.txt 2>/dev/null | tail -1 | sed 's/^/  /'
-              echo "$m=$val"
+              found="$(grep -h "^$m=" evidence/*.txt evidence/baseline/*.txt evidence/uac2/*.txt 2>/dev/null | tail -1 || true)"
+              if [ -n "$found" ]; then
+                echo "  $found"
+              else
+                echo "$m=$val"
+              fi
             done
             echo
             echo "DEVICE_WRITES=0"
