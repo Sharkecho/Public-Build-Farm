@@ -182,7 +182,7 @@ jobs:
           set -euo pipefail
           mkdir -p installer-materials
           cp Image.uac2 installer-materials/kernel
-          cp dtb.uac2.img installer-materials/dtb.img
+          cp -a dtb.uac2 installer-materials/dtb
           cat > installer-materials/INSTALLER-MANIFEST.txt <<EOF
           DEVICE=SM-N960N
           CODENAME=crownlte
@@ -191,7 +191,7 @@ jobs:
           UAC2=CONFIG_USB_CONFIGFS_F_UAC2=y
           PACKAGING=preserve-current-LineageOS-boot-ramdisk
           EOF
-          (cd installer-materials && sha256sum kernel dtb.img > SHA256SUMS)
+          (cd installer-materials && sha256sum kernel > SHA256SUMS && find dtb -type f -name '*.dtb' -print0 | sort -z | xargs -0 sha256sum >> SHA256SUMS)
           zip -r9 Note9-N960N-Lineage20-UAC2-installer-materials.zip installer-materials
           sha256sum Note9-N960N-Lineage20-UAC2-installer-materials.zip > Note9-N960N-Lineage20-UAC2-installer-materials.zip.sha256
 
@@ -219,7 +219,7 @@ jobs:
             Note9-Lineage20-UAC2-kernel-payload.zip
             Image.baseline
             Image.uac2
-            dtb.uac2.img
+            dtb.uac2/
             dtb-components.txt
             Note9-N960N-Lineage20-UAC2-installer-materials.zip
             Note9-N960N-Lineage20-UAC2-installer-materials.zip.sha256
