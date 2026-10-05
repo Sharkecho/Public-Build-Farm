@@ -90,17 +90,17 @@ jobs:
             echo "ROM=LineageOS 20"
             echo "KERNEL_SHA256=e54d27cb5c8d47e367d26dd43b30bb52378d1819aacf64218648c4e515c404bd"
             echo "DT_SHA256=c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35"
-            echo "MODE=RECOVERY_REPACK_NO_AUTOWRITE"
+            echo "MODE=V3_A2MIN_RECOVERY_REPACK_NO_AUTOWRITE"
           } > installer/BUILD-IDENTITY.txt
-          (cd installer && zip -r9 ../Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip .)
-          unzip -t Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip
-          sha256sum Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip > Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip.sha256
+          (cd installer && zip -r9 ../Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip .)
+          unzip -t Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip
+          sha256sum Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip > Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip.sha256
 
       - name: Upload recovery installer
         uses: actions/upload-artifact@v4
         with:
-          name: note9-n960n-lineage20-uac2-recovery-repack
+          name: note9-n960n-lineage20-uac2-v3-a2min-recovery-repack
           path: |
-            Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip
-            Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip.sha256
+            Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip
+            Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip.sha256
           retention-days: 30
