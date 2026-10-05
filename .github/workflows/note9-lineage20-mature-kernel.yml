@@ -72,6 +72,29 @@ jobs:
           "$GCC" --version
           "$GCC" -print-file-name=liblto_plugin.so
 
+      - name: Apply proven Apollo legacy DPU compatibility patch
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          FILE="drivers/video/fbdev/exynos/dpu_9810/decon_reg.c"
+          grep -q 'const double decon_clocks_table' "$FILE"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c")
+          s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {",
+                      "const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},",
+                      "{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},",
+                      "{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+          PY
+          grep -q 'const unsigned long decon_clocks_table' "$FILE"
+          ! grep -qE '41\.7|137\.5|62\.5' "$FILE"
+          git diff --check
+          git diff -- "$FILE"
+
       - name: Diagnostic compile — collect legacy failures
         working-directory: kernel
         env:
@@ -86,7 +109,7 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
           export LLVM=1
-          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type"
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
           rm -rf out/diagnostic
           mkdir -p out/diagnostic
           make O=out/diagnostic ARCH=arm64 "$DEFCONFIG"
@@ -115,7 +138,7 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
           export LLVM=1
-          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type"
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
           mkdir -p out/baseline
           make O=out/baseline ARCH=arm64 "$DEFCONFIG"
           make O=out/baseline ARCH=arm64 -j"$(nproc)"
@@ -137,7 +160,7 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
           export LLVM=1
-          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type"
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
           mkdir -p out/uac2
           make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
           scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
