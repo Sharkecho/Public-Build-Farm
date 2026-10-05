@@ -93,6 +93,18 @@ jobs:
           grep -q 'const unsigned long decon_clocks_table' "$FILE"
           ! grep -qE '41\.7|137\.5|62\.5' "$FILE"
           git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/usb/gadget/configfs.c")
+          s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"
+          anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s:
+              if anchor not in s:
+                  raise SystemExit("configfs include anchor missing")
+              s=s.replace(anchor, anchor+"\\n"+inc)
+          p.write_text(s)
+          PY
           git diff -- "$FILE"
 
       - name: Diagnostic compile — collect legacy failures
@@ -164,36 +176,14 @@ jobs:
           mkdir -p out/uac2
           make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
           scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
+          scripts/config --file out/uac2/.config -d USB_G_ANDROID
+          scripts/config --file out/uac2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
           make O=out/uac2 ARCH=arm64 olddefconfig
           grep '^CONFIG_USB_CONFIGFS_F_UAC2=y$' out/uac2/.config
           make O=out/uac2 ARCH=arm64 -j"$(nproc)"
           test -s out/uac2/arch/arm64/boot/Image
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
-          DTBDIR=out/uac2/arch/arm64/boot/dts/exynos
-          mapfile -t DTBS < <(find "$DTBDIR" -maxdepth 1 -type f -name 'exynos9810-crownlte_eur_open_*.dtb' | sort)
-          test "${#DTBS[@]}" -eq 8
-          cat "${DTBS[@]}" > "$GITHUB_WORKSPACE/dtb.uac2.img"
-          test -s "$GITHUB_WORKSPACE/dtb.uac2.img"
-          printf '%s\n' "${DTBS[@]}" > "$GITHUB_WORKSPACE/dtb-components.txt"
-          sha256sum "$GITHUB_WORKSPACE/Image.uac2" "$GITHUB_WORKSPACE/dtb.uac2.img"
-
-      - name: Package N960N installer materials
-        run: |
-          set -euo pipefail
-          mkdir -p installer-materials
-          cp Image.uac2 installer-materials/kernel
-          cp -a dtb.uac2 installer-materials/dtb
-          cat > installer-materials/INSTALLER-MANIFEST.txt <<EOF
-          DEVICE=SM-N960N
-          CODENAME=crownlte
-          ROM=LineageOS 20
-          KERNEL_COMMIT=$KERNEL_COMMIT
-          UAC2=CONFIG_USB_CONFIGFS_F_UAC2=y
-          PACKAGING=preserve-current-LineageOS-boot-ramdisk
-          EOF
-          (cd installer-materials && sha256sum kernel > SHA256SUMS && find dtb -type f -name '*.dtb' -print0 | sort -z | xargs -0 sha256sum >> SHA256SUMS)
-          zip -r9 Note9-N960N-Lineage20-UAC2-installer-materials.zip installer-materials
-          sha256sum Note9-N960N-Lineage20-UAC2-installer-materials.zip > Note9-N960N-Lineage20-UAC2-installer-materials.zip.sha256
+          sha256sum "$GITHUB_WORKSPACE/Image.uac2"
 
       - name: Package safe kernel payload
         run: |
@@ -219,10 +209,6 @@ jobs:
             Note9-Lineage20-UAC2-kernel-payload.zip
             Image.baseline
             Image.uac2
-            dtb.uac2/
-            dtb-components.txt
-            Note9-N960N-Lineage20-UAC2-installer-materials.zip
-            Note9-N960N-Lineage20-UAC2-installer-materials.zip.sha256
             diagnostic-build.log
             diagnostic-errors.txt
             diagnostic-summary.txt
