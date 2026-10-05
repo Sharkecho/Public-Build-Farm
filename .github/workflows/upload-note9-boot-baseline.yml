@@ -1,0 +1,41 @@
+name: Note9 Boot Baseline Upload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload-baseline:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify boot baseline integrity
+        run: |
+          set -euo pipefail
+          DIR="inputs/note9-n960n-lineage20"
+          test -s "$DIR/current-lineage20-boot.img"
+          test -s "$DIR/current-lineage20-boot.img.sha256"
+          test -s "$DIR/BOOT_BASELINE.md"
+          SIZE=$(stat -c%s "$DIR/current-lineage20-boot.img")
+          echo "BOOT_SIZE=$SIZE"
+          if [ "$SIZE" -gt 57671680 ]; then
+            echo "ERROR: boot.img larger than crownlte partition size 57671680"
+            exit 1
+          fi
+          echo "BOOT_SHA256=$(sha256sum "$DIR/current-lineage20-boot.img" | cut -d' ' -f1)"
+          (cd "$DIR" && sha256sum -c current-lineage20-boot.img.sha256)
+
+      - name: Upload baseline artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-lineage20-current-boot-baseline
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            inputs/note9-n960n-lineage20/current-lineage20-boot.img
+            inputs/note9-n960n-lineage20/current-lineage20-boot.img.sha256
+            inputs/note9-n960n-lineage20/BOOT_BASELINE.md
