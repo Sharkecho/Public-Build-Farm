@@ -2,6 +2,11 @@ name: Note9 LineageOS 20 Mature Kernel Pipeline
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/note9-v2-trigger.txt"
 
 permissions:
   contents: read
