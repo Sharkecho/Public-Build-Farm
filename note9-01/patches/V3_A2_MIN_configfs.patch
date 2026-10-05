@@ -1,0 +1,52 @@
+diff --git a/drivers/usb/gadget/configfs.c b/drivers/usb/gadget/configfs.c
+index 9b32930..41068b4 100644
+--- a/drivers/usb/gadget/configfs.c
++++ b/drivers/usb/gadget/configfs.c
+@@ -1656,6 +1656,24 @@ static int configfs_composite_bind(struct usb_gadget *gadget,
+ 			c->iConfiguration = s[0].id;
+ 		}
+ 
++#if defined(CONFIG_USB_CONFIGFS_F_UAC2) && defined(CONFIG_USB_CONFIGFS_UEVENT)
++		/*
++		 * V3 A2-MIN: promote a UAC2 function that is linked through
++		 * configfs but never named by the vendor USB mode strings, so
++		 * that a plain UDC re-bind (no functions_store call) also
++		 * carries the UAC2 interface.
++		 */
++		if (!gi->symboliclink_change_mode) {
++			list_for_each_entry_safe(f, tmp, &gi->linked_func, list) {
++				if (!strcmp(f->name, "uac2_func")) {
++					pr_info("usb: configfs: promote linked %s into cfg->func_list\n",
++						f->name);
++					list_move_tail(&f->list, &cfg->func_list);
++				}
++			}
++		}
++#endif
++
+ 		list_for_each_entry_safe(f, tmp, &cfg->func_list, list) {
+ 			list_del(&f->list);
+ 			ret = usb_add_function(c, f);
+@@ -2007,6 +2025,22 @@ functions_store(struct device *pdev, struct device_attribute *attr,
+ #endif
+ 					list_move_tail(&f->list, &cfg->func_list);
+ 				}
++#if defined(CONFIG_USB_CONFIGFS_F_UAC2) && defined(CONFIG_USB_CONFIGFS_UEVENT)
++				/*
++				 * V3 A2-MIN: a UAC2 function linked through configfs
++				 * is never named by the vendor USB mode strings
++				 * ("adb", "mtp,adb", ...), so it would stay in
++				 * linked_func forever and never reach the composite
++				 * descriptor set. Promote it together with the
++				 * functions that are named.
++				 */
++				else if (!dev->symboliclink_change_mode &&
++					 !strcmp(f->name, "uac2_func")) {
++					pr_info("usb: %s: promote linked %s\n",
++						__func__, f->name);
++					list_move_tail(&f->list, &cfg->func_list);
++				}
++#endif
+ 			}
+ 		}
+ 	}
