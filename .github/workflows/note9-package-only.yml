@@ -1,0 +1,71 @@
+name: Note9 Package Only
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download verified Run 11 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir verified
+          gh run download 37287043519 --repo "$GITHUB_REPOSITORY" --name note9-lineage20-uac2-kernel-payload --dir verified
+          unzip -l verified/*.zip || true
+          find verified -maxdepth 3 -type f -print
+
+      - name: Verify frozen UAC2 Image identity
+        run: |
+          set -euo pipefail
+          IMG="$(find verified -type f -name Image.uac2 | head -1)"
+          test -s "$IMG"
+          echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  $IMG" | sha256sum -c -
+          cp "$IMG" Image.uac2
+
+      - name: Export crownlte DTB sources without kernel rebuild
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/LineageOS/android_kernel_samsung_exynos9810 kernel
+          cd kernel
+          git fetch --depth=1 origin 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+          git checkout --detach 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+          mkdir -p "$GITHUB_WORKSPACE/dtb-source"
+          find arch/arm64/boot/dts -type f \( -name 'exynos9810-crownlte*.dts' -o -name 'exynos9810-crownlte*.dtsi' \) -exec cp --parents {} "$GITHUB_WORKSPACE/dtb-source/" \;
+          test "$(find "$GITHUB_WORKSPACE/dtb-source" -type f | wc -l)" -gt 0
+
+      - name: Package verified kernel and DTB source materials
+        run: |
+          set -euo pipefail
+          mkdir -p package
+          cp Image.uac2 package/kernel
+          cp -a dtb-source package/
+          cat > package/IDENTITY.txt <<'EOF'
+          DEVICE=SM-N960N
+          CODENAME=crownlte
+          ROM=LineageOS 20
+          KERNEL_SOURCE=LineageOS/android_kernel_samsung_exynos9810
+          KERNEL_COMMIT=6a9461f9460ca51d1217e5069a5d5556fcc79e63
+          VERIFIED_BUILD_RUN=37287043519
+          VERIFIED_IMAGE_SHA256=3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6
+          UAC2=CONFIG_USB_CONFIGFS_F_UAC2=y
+          EOF
+          (cd package && sha256sum kernel > SHA256SUMS)
+          zip -r9 Note9-N960N-Lineage20-UAC2-package-materials.zip package
+          sha256sum Note9-N960N-Lineage20-UAC2-package-materials.zip > Note9-N960N-Lineage20-UAC2-package-materials.zip.sha256
+
+      - name: Upload package-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-n960n-uac2-package-only
+          path: |
+            Note9-N960N-Lineage20-UAC2-package-materials.zip
+            Note9-N960N-Lineage20-UAC2-package-materials.zip.sha256
+            Image.uac2
+          retention-days: 30
