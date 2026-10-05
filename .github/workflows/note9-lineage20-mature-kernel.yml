@@ -168,8 +168,28 @@ jobs:
           grep '^CONFIG_USB_CONFIGFS_F_UAC2=y$' out/uac2/.config
           make O=out/uac2 ARCH=arm64 -j"$(nproc)"
           test -s out/uac2/arch/arm64/boot/Image
+          test -s out/uac2/arch/arm64/boot/dtb.img
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
-          sha256sum "$GITHUB_WORKSPACE/Image.uac2"
+          cp out/uac2/arch/arm64/boot/dtb.img "$GITHUB_WORKSPACE/dtb.uac2.img"
+          sha256sum "$GITHUB_WORKSPACE/Image.uac2" "$GITHUB_WORKSPACE/dtb.uac2.img"
+
+      - name: Package N960N installer materials
+        run: |
+          set -euo pipefail
+          mkdir -p installer-materials
+          cp Image.uac2 installer-materials/kernel
+          cp dtb.uac2.img installer-materials/dtb.img
+          cat > installer-materials/INSTALLER-MANIFEST.txt <<EOF
+          DEVICE=SM-N960N
+          CODENAME=crownlte
+          ROM=LineageOS 20
+          KERNEL_COMMIT=$KERNEL_COMMIT
+          UAC2=CONFIG_USB_CONFIGFS_F_UAC2=y
+          PACKAGING=preserve-current-LineageOS-boot-ramdisk
+          EOF
+          (cd installer-materials && sha256sum kernel dtb.img > SHA256SUMS)
+          zip -r9 Note9-N960N-Lineage20-UAC2-installer-materials.zip installer-materials
+          sha256sum Note9-N960N-Lineage20-UAC2-installer-materials.zip > Note9-N960N-Lineage20-UAC2-installer-materials.zip.sha256
 
       - name: Package safe kernel payload
         run: |
@@ -195,6 +215,9 @@ jobs:
             Note9-Lineage20-UAC2-kernel-payload.zip
             Image.baseline
             Image.uac2
+            dtb.uac2.img
+            Note9-N960N-Lineage20-UAC2-installer-materials.zip
+            Note9-N960N-Lineage20-UAC2-installer-materials.zip.sha256
             diagnostic-build.log
             diagnostic-errors.txt
             diagnostic-summary.txt
