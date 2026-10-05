@@ -2,11 +2,6 @@ name: Note9 LineageOS 20 Mature Kernel Pipeline
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/note9-v2-trigger.txt"
 
 permissions:
   contents: read
@@ -35,24 +30,13 @@ jobs:
           git checkout --detach "$KERNEL_COMMIT"
           test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
 
-      - name: Restore toolchain cache
-        id: toolchain-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            compiler/clang-r416183
-            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
-          key: note9-toolchains-r416183-apollo-gcc49-v1
-
       - name: Install pinned AOSP Clang
-        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$GITHUB_WORKSPACE/compiler/clang-r416183"
           curl -fL --retry 4 "$CLANG_URL" | tar -xz -C "$GITHUB_WORKSPACE/compiler/clang-r416183"
           "$GITHUB_WORKSPACE/compiler/clang-r416183/bin/clang" --version
 
       - name: Import Apollo GCC 4.9 companion toolchain
-        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           ARCHIVE="$RUNNER_TEMP/apollo.tar.gz"
@@ -111,30 +95,56 @@ jobs:
           git diff --check
           git diff -- "$FILE"
 
-      - name: Restore latest KERNEL_OUT checkpoint
-        id: restore-kernel-out
+      - name: Diagnostic compile — collect legacy failures
+        working-directory: kernel
         env:
-          GH_TOKEN: ${{ github.token }}
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -uo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
+          export LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          rm -rf out/diagnostic
+          mkdir -p out/diagnostic
+          make O=out/diagnostic ARCH=arm64 "$DEFCONFIG"
+          set +e
+          make -k O=out/diagnostic ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/diagnostic-build.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          grep -E 'error:|fatal error:|undefined reference|Error [0-9]+' "$GITHUB_WORKSPACE/diagnostic-build.log" | sort -u > "$GITHUB_WORKSPACE/diagnostic-errors.txt" || true
+          echo "DIAGNOSTIC_MAKE_RC=$RC" | tee "$GITHUB_WORKSPACE/diagnostic-summary.txt"
+          echo "DIAGNOSTIC_ERROR_COUNT=$(wc -l < "$GITHUB_WORKSPACE/diagnostic-errors.txt")" | tee -a "$GITHUB_WORKSPACE/diagnostic-summary.txt"
+          cat "$GITHUB_WORKSPACE/diagnostic-errors.txt" || true
+          # Diagnostic failure is evidence, not a job failure. Formal build below remains the gate.
+          exit 0
+
+      - name: Build crownlte baseline using mature out-of-tree pattern
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
         run: |
           set -euo pipefail
-          mkdir -p restore-artifact
-          ART_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired==false and (.name|startswith("note9-v2-kernel-out-")))] | sort_by(.created_at) | reverse | .[0].id // empty')"
-          if [ -z "$ART_ID" ]; then
-            echo "restored=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ART_ID/zip" > checkpoint.zip
-          unzip -q checkpoint.zip -d restore-artifact
-          test -s restore-artifact/IDENTITY.txt
-          grep -q "^SOURCE_COMMIT=$KERNEL_COMMIT$" restore-artifact/IDENTITY.txt || { echo "restored=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          if [ -s restore-artifact/out-uac2.tar.zst ]; then
-            mkdir -p kernel/out
-            tar -C kernel/out -I zstd -xf restore-artifact/out-uac2.tar.zst
-            echo "restored=true" >> "$GITHUB_OUTPUT"
-            echo "RESTORED_ARTIFACT_ID=$ART_ID"
-          else
-            echo "restored=false" >> "$GITHUB_OUTPUT"
-          fi
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
+          export LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          mkdir -p out/baseline
+          make O=out/baseline ARCH=arm64 "$DEFCONFIG"
+          make O=out/baseline ARCH=arm64 -j"$(nproc)"
+          test -s out/baseline/arch/arm64/boot/Image
+          cp out/baseline/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.baseline"
+          sha256sum "$GITHUB_WORKSPACE/Image.baseline"
 
       - name: Build UAC2 variant from same verified source
         working-directory: kernel
@@ -153,45 +163,23 @@ jobs:
           export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
           python3 - <<'PY'
           from pathlib import Path
-          p=Path("drivers/usb/gadget/configfs.c")
-          s=p.read_text()
-          inc="#include <linux/usblog_proc_notify.h>"
-          anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          p=Path("drivers/usb/gadget/configfs.c"); s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"; anchor="#include <linux/soc/samsung/exynos-soc.h>"
           if inc not in s:
-              if anchor not in s:
-                  raise SystemExit("configfs include anchor missing")
+              if anchor not in s: raise SystemExit("configfs include anchor missing")
               s=s.replace(anchor, anchor+chr(10)+inc)
           p.write_text(s)
           assert inc in p.read_text().splitlines()
-
-          p=Path("drivers/usb/gadget/function/f_ncm.c")
-          s=p.read_text()
-          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE\nextern struct device *create_function_device(char *name);"
-          compat="""#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
-void set_ncm_ready(bool ready)
-{
-    ncm_connect = ready;
-}
-EXPORT_SYMBOL(set_ncm_ready);
-#endif
-
-"""
+          p=Path("drivers/usb/gadget/function/f_ncm.c"); s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"extern struct device *create_function_device(char *name);"
+          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    ncm_connect = ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
           if compat not in s:
-              if marker not in s:
-                  raise SystemExit("f_ncm compatibility anchor missing")
+              if marker not in s: raise SystemExit("f_ncm compatibility anchor missing")
               s=s.replace(marker, compat+marker)
           p.write_text(s)
           PY
-          if [ ! -s out/uac2/.config ]; then
-            mkdir -p out/uac2
-            make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
-            scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
-            scripts/config --file out/uac2/.config -d USB_G_ANDROID
-            scripts/config --file out/uac2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
-            make O=out/uac2 ARCH=arm64 olddefconfig
-          else
-            echo "KERNEL_OUT_RESTORED=YES"
-          fi
+          mkdir -p out/uac2
+          make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
           scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
           scripts/config --file out/uac2/.config -d USB_G_ANDROID
           scripts/config --file out/uac2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
@@ -202,34 +190,31 @@ EXPORT_SYMBOL(set_ncm_ready);
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
           sha256sum "$GITHUB_WORKSPACE/Image.uac2"
 
-      - name: Save KERNEL_OUT checkpoint even on failure
-        if: ${{ always() }}
+      - name: Package safe kernel payload
         run: |
-          mkdir -p kernel-out-checkpoint
-          if [ -d kernel/out/uac2 ]; then
-            tar -C kernel/out -I 'zstd -3 -T0' -cf kernel-out-checkpoint/out-uac2.tar.zst uac2 || true
-          fi
-          cp kernel/out/uac2/.config kernel-out-checkpoint/V2.config 2>/dev/null || true
-          printf 'SOURCE_COMMIT=%s\nWORKFLOW_COMMIT=%s\n' "$KERNEL_COMMIT" "$GITHUB_SHA" > kernel-out-checkpoint/IDENTITY.txt
-          find kernel-out-checkpoint -type f -maxdepth 1 -exec sha256sum {} \; > kernel-out-checkpoint/SHA256SUMS || true
-      - name: Upload KERNEL_OUT checkpoint even on failure
-        if: ${{ always() }}
+          mkdir -p package
+          cp Image.uac2 package/Image
+          cat > package/README-FIRST.txt <<'EOF'
+          Device: Samsung Galaxy Note9 SM-N960N / crownlte
+          ROM base: LineageOS 20
+          Kernel source: LineageOS/android_kernel_samsung_exynos9810
+          Commit: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+          Change: CONFIG_USB_CONFIGFS_F_UAC2=y
+          This artifact is a validated kernel payload, not yet a flash-authorized boot image.
+          Preserve/restore the current boot image before any device write.
+          EOF
+          (cd package && sha256sum Image > SHA256SUMS)
+          zip -r9 Note9-Lineage20-UAC2-kernel-payload.zip package
+
+      - name: Upload kernel package
         uses: actions/upload-artifact@v4
         with:
-          name: note9-v2-kernel-out-${{ github.run_id }}
-          path: kernel-out-checkpoint/
-          retention-days: 30
-          if-no-files-found: warn
-      - name: Save V2 kernel checkpoint
-        run: |
-          cp kernel/out/uac2/.config V2.config
-          sha256sum Image.uac2 V2.config > V2-SHA256SUMS
-      - name: Upload V2 kernel checkpoint
-        uses: actions/upload-artifact@v4
-        with:
-          name: note9-v2-kernel-checkpoint
+          name: note9-lineage20-uac2-kernel-payload
           path: |
+            Note9-Lineage20-UAC2-kernel-payload.zip
+            Image.baseline
             Image.uac2
-            V2.config
-            V2-SHA256SUMS
+            diagnostic-build.log
+            diagnostic-errors.txt
+            diagnostic-summary.txt
           retention-days: 30
