@@ -1,0 +1,91 @@
+name: Note9 Final Boot Repack
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  repack:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Fetch frozen inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 -o current-boot.img \
+            "https://github.com/Sharkecho/Public-Build-Farm/releases/download/note9-lineage20-boot-baseline/current-lineage20-boot.img"
+          echo "0f389af68199662690e6d1498fea2dd6960b04cb40e6c0f02956d87abde066f8  current-boot.img" | sha256sum -c -
+          mkdir package-artifact
+          gh run download 37299363583 --repo "$GITHUB_REPOSITORY" --name note9-n960n-uac2-package-only --dir package-artifact
+          find package-artifact -type f -maxdepth 3 -print
+          IMG="$(find package-artifact -type f -name Image.uac2 | head -1)"
+          DT="$(find package-artifact -type f -name dt.img | head -1)"
+          test -s "$IMG"; test -s "$DT"
+          echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  $IMG" | sha256sum -c -
+          echo "c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35  $DT" | sha256sum -c -
+          cp "$IMG" Image.uac2
+          cp "$DT" dt.img
+
+      - name: Fetch proven boot repack tool
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 -o magiskboot \
+            "https://raw.githubusercontent.com/Redminote11tech/exynos9810-kernel/duhan-%284.9.337%29/Apollo/kernelzip/floyd/tools/magiskboot"
+          chmod +x magiskboot
+          test -x magiskboot
+
+      - name: Repack current Lineage boot with frozen UAC2 kernel and DT
+        run: |
+          set -euo pipefail
+          mkdir work
+          cp current-boot.img work/boot.img
+          cp magiskboot work/
+          cd work
+          ./magiskboot unpack boot.img
+          test -s kernel
+          test -s extra
+          sha256sum kernel extra > ORIGINAL_COMPONENTS.sha256
+          cp ../Image.uac2 kernel
+          cp ../dt.img extra
+          ./magiskboot repack boot.img
+          test -s new-boot.img
+          cp new-boot.img ../Note9-N960N-Lineage20-UAC2-boot.img
+
+      - name: Validate final boot image
+        run: |
+          set -euo pipefail
+          test -s Note9-N960N-Lineage20-UAC2-boot.img
+          SIZE="$(stat -c %s Note9-N960N-Lineage20-UAC2-boot.img)"
+          test "$SIZE" -le 57671680
+          mkdir verify
+          cp Note9-N960N-Lineage20-UAC2-boot.img verify/boot.img
+          cp magiskboot verify/
+          cd verify
+          ./magiskboot unpack boot.img
+          echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  kernel" | sha256sum -c -
+          echo "c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35  extra" | sha256sum -c -
+          cd ..
+          sha256sum Note9-N960N-Lineage20-UAC2-boot.img > Note9-N960N-Lineage20-UAC2-boot.img.sha256
+          {
+            echo "DEVICE=SM-N960N"
+            echo "ROM=LineageOS 20"
+            echo "BASE_BOOT_SHA256=0f389af68199662690e6d1498fea2dd6960b04cb40e6c0f02956d87abde066f8"
+            echo "KERNEL_SHA256=3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6"
+            echo "DT_SHA256=c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35"
+            echo "FINAL_SIZE=$SIZE"
+            cat Note9-N960N-Lineage20-UAC2-boot.img.sha256
+          } > FINAL-BOOT-MANIFEST.txt
+
+      - name: Upload final boot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-n960n-lineage20-uac2-final-boot
+          path: |
+            Note9-N960N-Lineage20-UAC2-boot.img
+            Note9-N960N-Lineage20-UAC2-boot.img.sha256
+            FINAL-BOOT-MANIFEST.txt
+          retention-days: 30
