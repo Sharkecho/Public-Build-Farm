@@ -74,6 +74,8 @@ jobs:
 
       # ------------------------------------------------------------------ assets
       - name: "stage ROM reference config"
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # The phone's /proc/config.gz, captured read-only from the running ROM.
@@ -84,9 +86,10 @@ jobs:
           # records its sha256, so the comparison is still pinned.
           mkdir -p evidence baseline-ref
           echo "ROM_CONFIG_REF=release:lo20-baseline-ref/rom-proc-config.txt"
-          RELEASE_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/lo20-baseline-ref/rom-proc-config.txt"
-          if curl -fL --retry 3 --retry-delay 2 \
-                -o baseline-ref/rom-proc-config.txt "$RELEASE_URL"; then
+          if gh release download lo20-baseline-ref \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern "rom-proc-config.txt" \
+                --dir baseline-ref --clobber; then
             echo "ROM_CONFIG_SOURCE=release lo20-baseline-ref"
           else
             echo "ROM_CONFIG_SOURCE=checkout fallback"
