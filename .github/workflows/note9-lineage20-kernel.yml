@@ -97,7 +97,10 @@ jobs:
           test "$ACTUAL_SHA" = "c291d1509b7a063b7f51113e0858bdeda94adcb5bb0698414008fbb66aa6b3d9" || {
             echo "ROM_CONFIG_SHA_FAIL=$ACTUAL_SHA"; exit 1; }
 
-          cp "$REF" "$GITHUB_WORKSPACE/$ROM_CONFIG_REF"
+          if [ "$(realpath "$REF")" != "$(realpath -m "$GITHUB_WORKSPACE/$ROM_CONFIG_REF")" ]; then
+            mkdir -p "$(dirname "$GITHUB_WORKSPACE/$ROM_CONFIG_REF")"
+            cp "$REF" "$GITHUB_WORKSPACE/$ROM_CONFIG_REF"
+          fi
           echo "ROM_CONFIG_SOURCE=public-release lo20-baseline-ref"
           echo "ROM_CONFIG_REF_LINES=$(grep -c '^CONFIG' "$REF")"
           grep -E "^# CONFIG_USB_CONFIGFS_F_UAC2 is not set$" "$REF" >/dev/null || {
