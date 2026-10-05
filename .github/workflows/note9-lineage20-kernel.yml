@@ -455,7 +455,7 @@ jobs:
           cp ../build-uac2/.config ../evidence/uac2/.config
           echo "UAC2_CONFIG_VERIFIED=PASS"
           echo "UAC2_BUILD=PASS"
-          echo "NOTE=UAC2 Image validated; packaging is a separate fail-closed step"
+          echo "NOTE=UAC2 Image validated; package only after all gates pass"
 
       # ---------------------------------------------------------------- STEP 10
       - name: "package validated UAC2 Image with pinned AnyKernel3"
@@ -464,42 +464,7 @@ jobs:
           set -euo pipefail
           test -f evidence/gate.marker
           test -f evidence/uac2/Image
-          grep -q '^CONFIG_USB_CONFIGFS_F_UAC2=y
-        if: always()
-        run: |
-          set -uo pipefail
-          {
-            echo "Note9 LineageOS 20 kernel gate"
-            echo "run            : $GITHUB_RUN_ID"
-            echo "build_mode     : $BUILD_MODE"
-            echo "kernel repo    : $KERNEL_REPO_URL"
-            echo "kernel branch  : $KERNEL_BRANCH"
-            echo "kernel commit  : $KERNEL_COMMIT"
-            echo "defconfig      : $DEFCONFIG"
-            echo
-            echo "ROM_KERNEL_SIZE=$ROM_KERNEL_SIZE"
-            echo "ROM_KERNEL_SHA256=$ROM_KERNEL_SHA256"
-            for m in SOURCE_IDENTITY TOOLCHAIN_IDENTITY BASELINE_BUILD BASELINE_GATE CONFIG_GATE UAC2_BUILD UAC2_CONFIG_VERIFIED; do
-              val="(not reached)"
-              grep -h "^$m=" evidence/*.txt evidence/baseline/*.txt evidence/uac2/*.txt 2>/dev/null | tail -1 | sed 's/^/  /'
-              echo "$m=$val"
-            done
-            echo
-            echo "DEVICE_WRITES=0"
-            echo "No boot.img splice, no Odin package, no AnyKernel3, no vendor or"
-            echo "init rc change was produced by this run."
-          } | tee evidence/SUMMARY.txt
-
-      # ---------------------------------------------------------------- STEP 12
-      - name: "upload evidence"
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: note9-lineage20-kernel-evidence
-          path: evidence/
-          if-no-files-found: warn
-          retention-days: 90
- evidence/uac2/.config
+          grep -q '^CONFIG_USB_CONFIGFS_F_UAC2=y$' evidence/uac2/.config
 
           AK3_COMMIT="020dfeccf9d7e962a48400fc94d3e451df92eead"
           WORK="$RUNNER_TEMP/ak3"
@@ -513,31 +478,30 @@ jobs:
           test "$(git -C "$WORK" rev-parse HEAD)" = "$AK3_COMMIT"
           rm -rf "$WORK/.git"
 
-          cat > "$WORK/anykernel.sh" <<'AK3'
-          # AnyKernel3 Ramdisk Mod Script
-          properties() { '
-          kernel.string=Note9 LineageOS 20 UAC2 for SM-N960N / crownlte
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=crownlte
-          device.name2=crownlteks
-          device.name3=
-          device.name4=
-          device.name5=
-          supported.versions=13
-          supported.patchlevels=
-          '; }
-          BLOCK=auto;
-          IS_SLOT_DEVICE=0;
-          RAMDISK_COMPRESSION=auto;
-          PATCH_VBMETA_FLAG=auto;
-          . tools/ak3-core.sh;
-          dump_boot;
-          write_boot;
-          AK3
+          printf '%s\n' \
+            "# AnyKernel3 Ramdisk Mod Script" \
+            "properties() { '" \
+            "kernel.string=Note9 LineageOS 20 UAC2 for SM-N960N / crownlte" \
+            "do.devicecheck=1" \
+            "do.modules=0" \
+            "do.systemless=1" \
+            "do.cleanup=1" \
+            "do.cleanuponabort=0" \
+            "device.name1=crownlte" \
+            "device.name2=crownlteks" \
+            "device.name3=" \
+            "device.name4=" \
+            "device.name5=" \
+            "supported.versions=13" \
+            "supported.patchlevels=" \
+            "'; }" \
+            "BLOCK=auto;" \
+            "IS_SLOT_DEVICE=0;" \
+            "RAMDISK_COMPRESSION=auto;" \
+            "PATCH_VBMETA_FLAG=auto;" \
+            ". tools/ak3-core.sh;" \
+            "dump_boot;" \
+            "write_boot;" > "$WORK/anykernel.sh"
 
           cp evidence/uac2/Image "$WORK/Image"
           rm -rf "$WORK/modules" "$WORK/ramdisk" "$WORK/patch" 2>/dev/null || true
@@ -545,90 +509,19 @@ jobs:
 
           (cd "$WORK" && zip -r9 "$ZIP" . -x 'README.md' '.git/*' >/dev/null)
           unzip -t "$ZIP" >/dev/null
-          test "$(unzip -Z1 "$ZIP" | grep -c '^Image
-        if: always()
-        run: |
-          set -uo pipefail
-          {
-            echo "Note9 LineageOS 20 kernel gate"
-            echo "run            : $GITHUB_RUN_ID"
-            echo "build_mode     : $BUILD_MODE"
-            echo "kernel repo    : $KERNEL_REPO_URL"
-            echo "kernel branch  : $KERNEL_BRANCH"
-            echo "kernel commit  : $KERNEL_COMMIT"
-            echo "defconfig      : $DEFCONFIG"
-            echo
-            echo "ROM_KERNEL_SIZE=$ROM_KERNEL_SIZE"
-            echo "ROM_KERNEL_SHA256=$ROM_KERNEL_SHA256"
-            for m in SOURCE_IDENTITY TOOLCHAIN_IDENTITY BASELINE_BUILD BASELINE_GATE CONFIG_GATE UAC2_BUILD UAC2_CONFIG_VERIFIED; do
-              val="(not reached)"
-              grep -h "^$m=" evidence/*.txt evidence/baseline/*.txt evidence/uac2/*.txt 2>/dev/null | tail -1 | sed 's/^/  /'
-              echo "$m=$val"
-            done
-            echo
-            echo "DEVICE_WRITES=0"
-            echo "No boot.img splice, no Odin package, no AnyKernel3, no vendor or"
-            echo "init rc change was produced by this run."
-          } | tee evidence/SUMMARY.txt
-
-      # ---------------------------------------------------------------- STEP 12
-      - name: "upload evidence"
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: note9-lineage20-kernel-evidence
-          path: evidence/
-          if-no-files-found: warn
-          retention-days: 90
-)" = "1"
-          test "$(unzip -Z1 "$ZIP" | grep -Ec '(^|/)(boot|recovery|vendor|system).*\\.(img|lz4)
-        if: always()
-        run: |
-          set -uo pipefail
-          {
-            echo "Note9 LineageOS 20 kernel gate"
-            echo "run            : $GITHUB_RUN_ID"
-            echo "build_mode     : $BUILD_MODE"
-            echo "kernel repo    : $KERNEL_REPO_URL"
-            echo "kernel branch  : $KERNEL_BRANCH"
-            echo "kernel commit  : $KERNEL_COMMIT"
-            echo "defconfig      : $DEFCONFIG"
-            echo
-            echo "ROM_KERNEL_SIZE=$ROM_KERNEL_SIZE"
-            echo "ROM_KERNEL_SHA256=$ROM_KERNEL_SHA256"
-            for m in SOURCE_IDENTITY TOOLCHAIN_IDENTITY BASELINE_BUILD BASELINE_GATE CONFIG_GATE UAC2_BUILD UAC2_CONFIG_VERIFIED; do
-              val="(not reached)"
-              grep -h "^$m=" evidence/*.txt evidence/baseline/*.txt evidence/uac2/*.txt 2>/dev/null | tail -1 | sed 's/^/  /'
-              echo "$m=$val"
-            done
-            echo
-            echo "DEVICE_WRITES=0"
-            echo "No boot.img splice, no Odin package, no AnyKernel3, no vendor or"
-            echo "init rc change was produced by this run."
-          } | tee evidence/SUMMARY.txt
-
-      # ---------------------------------------------------------------- STEP 12
-      - name: "upload evidence"
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: note9-lineage20-kernel-evidence
-          path: evidence/
-          if-no-files-found: warn
-          retention-days: 90
- || true)" = "0"
+          test "$(unzip -Z1 "$ZIP" | grep -c '^Image$')" = "1"
+          test "$(unzip -Z1 "$ZIP" | grep -Ec '(^|/)(boot|recovery|vendor|system).*\\.(img|lz4)$' || true)" = "0"
 
           IMAGE_SHA="$(sha256sum evidence/uac2/Image | awk '{print $1}')"
           ZIP_IMAGE_SHA="$(unzip -p "$ZIP" Image | sha256sum | awk '{print $1}')"
           test "$IMAGE_SHA" = "$ZIP_IMAGE_SHA"
           ZIP_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
-
           {
             echo "PACKAGE_GATE=PASS"
             echo "PACKAGE_FORMAT=AnyKernel3"
             echo "AK3_COMMIT=$AK3_COMMIT"
             echo "TARGET=SM-N960N/crownlte"
-            echo "ANDROID=13 (LineageOS 20)"
+            echo "ANDROID=13"
             echo "KERNEL_IMAGE_SHA256=$IMAGE_SHA"
             echo "PACKAGE_SHA256=$ZIP_SHA"
             echo "PACKAGE_FILE=$(basename "$ZIP")"
@@ -648,13 +541,12 @@ jobs:
           ZIP="$(find evidence/package -maxdepth 1 -name 'Note9-LineageOS20-UAC2-*.zip' -print -quit)"
           test -n "$ZIP" && test -f "$ZIP"
           TAG="lineage20-uac2-run-${GITHUB_RUN_ID}"
-          TITLE="Note9 LineageOS 20 UAC2 — run ${GITHUB_RUN_ID}"
           gh release create "$TAG" "$ZIP" evidence/package/PACKAGE_MANIFEST.txt \
             --repo Sharkecho/note9-01 \
-            --title "$TITLE" \
-            --notes "Fail-closed cloud build. LineageOS 20 pinned kernel + one-line CONFIG_USB_CONFIGFS_F_UAC2=y delta. AnyKernel3 pinned to 020dfeccf9d7e962a48400fc94d3e451df92eead. Verify PACKAGE_MANIFEST.txt before flashing."
-          echo "PRIVATE_UPLOAD=PASS"
-          echo "PRIVATE_RELEASE_TAG=$TAG" | tee evidence/package/private-upload.txt
+            --title "Note9 LineageOS 20 UAC2 — run ${GITHUB_RUN_ID}" \
+            --notes "Fail-closed build: pinned LineageOS 20 kernel; only CONFIG_USB_CONFIGFS_F_UAC2=y; pinned AnyKernel3. Verify PACKAGE_MANIFEST.txt before flashing."
+          echo "PRIVATE_UPLOAD=PASS" | tee evidence/package/private-upload.txt
+          echo "PRIVATE_RELEASE_TAG=$TAG" | tee -a evidence/package/private-upload.txt
 
       - name: "upload package fallback artifact"
         if: ${{ env.BUILD_MODE == 'uac2' || env.BUILD_MODE == 'compare' }}
@@ -687,8 +579,8 @@ jobs:
             done
             echo
             echo "DEVICE_WRITES=0"
-            echo "No boot.img splice, no Odin package, no AnyKernel3, no vendor or"
-            echo "init rc change was produced by this run."
+            echo "No raw boot.img/Odin image/vendor/init rc modification is produced."
+            echo "AnyKernel3 package is created only after every kernel gate passes."
           } | tee evidence/SUMMARY.txt
 
       # ---------------------------------------------------------------- STEP 12
