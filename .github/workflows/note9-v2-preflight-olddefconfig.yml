@@ -1,153 +1,187 @@
 name: note9-v2-preflight-olddefconfig
 
-# READ-ONLY Kconfig dependency audit for Kernel V2.
-# Dispatched from the WSL/ubuntu runner because this Windows host has no
-# make/gcc/bison. Produces V1.config vs V2.config diff artifacts only.
-# It does NOT compile a kernel, does NOT touch the phone, does NOT flash.
+# READ-ONLY Kconfig dependency audit for Note9-01 Kernel V2.
+#
+# Purpose: prove what happens to the protected USB capabilities when
+# CONFIG_USB_G_ANDROID / CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE are disabled.
+#
+# This workflow does NOT compile a kernel. It runs `make olddefconfig` twice
+# (V1 = as-is, V2 = with the two legacy symbols disabled), diffs the two
+# configs, and asserts every protected capability survives.
+# It never touches the phone, never flashes, never writes a partition.
 
 on:
   workflow_dispatch:
-    inputs:
-      source_ref:
-        description: 'Source ref in the private repo'
-        required: true
-        default: 'main'
+
+permissions:
+  contents: read
+
+env:
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
+  KERNEL_COMMIT: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+  DEFCONFIG: exynos9810-crownlte_defconfig
 
 jobs:
   preflight:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
-      - name: Checkout public farm
-        uses: actions/checkout@v4
-
-      - name: Checkout private kernel source
-        uses: actions/checkout@v4
-        with:
-          repository: Sharkecho/note9-01
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: ${{ github.event.inputs.source_ref }}
-          path: priv
-
-      - name: Locate kernel source
-        id: locate
-        run: |
-          set -e
-          # find the kernel tree root (has Makefile + Kconfig + drivers/usb/gadget)
-          ROOT=""
-          for d in priv/kernel/source/N960NKSU3FVG4 priv/kernel/source/* priv/kernel/*; do
-            if [ -f "$d/Makefile" ] && [ -d "$d/drivers/usb/gadget" ]; then ROOT="$d"; break; fi
-          done
-          if [ -z "$ROOT" ]; then echo "KERNEL_ROOT_NOT_FOUND"; ls -la priv; exit 1; fi
-          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
-          echo "KERNEL_ROOT=$ROOT"
-
-      - name: Install kconfig host deps
+      - name: Install kconfig host dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev make gcc
 
-      - name: Prepare V1 config (from running kernel, supplied as V1.config)
+      - name: Checkout exact running-kernel source
         run: |
           set -e
-          ls -la
-          # V1.config is committed by the host as the authoritative running-kernel config
-          cp V1.config "${{ steps.locate.outputs.root }}/.config"
-          wc -l "${{ steps.locate.outputs.root }}/.config"
-          sha256sum "${{ steps.locate.outputs.root }}/.config"
+          git clone --filter=blob:none "$KERNEL_REPO" kernel
+          cd kernel
+          git fetch --depth=1 origin "$KERNEL_COMMIT"
+          git checkout --detach "$KERNEL_COMMIT"
+          test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
+          test -f drivers/usb/gadget/configfs.c
+          test -f drivers/usb/gadget/Kconfig
 
-      - name: V1 - normalize with olddefconfig
+      - name: Confirm the source really contains the legacy composite
         run: |
           set -e
-          cd "${{ steps.locate.outputs.root }}"
+          cd kernel
+          echo "=== Kconfig USB_G_ANDROID block ==="
+          awk '/^config USB_G_ANDROID$/,/^$/' drivers/usb/gadget/Kconfig
+          echo "=== Kconfig USB_ANDROID_SAMSUNG_COMPOSITE block ==="
+          awk '/^config USB_ANDROID_SAMSUNG_COMPOSITE$/,/^$/' drivers/usb/gadget/Kconfig
+          echo "=== defconfig values for the two symbols ==="
+          grep -n 'USB_G_ANDROID\|USB_ANDROID_SAMSUNG_COMPOSITE\|USB_DUN_SUPPORT\|USB_NCM_SUPPORT_MTU_CHANGE' arch/arm64/configs/"$DEFCONFIG" || true
+          echo "=== android_device_create (the android0 registration) ==="
+          grep -n 'android_device_create\|device_create(android_class' drivers/usb/gadget/configfs.c | head
+
+      - name: V1 - materialize config and normalize
+        run: |
+          set -e
+          cd kernel
+          make ARCH=arm64 "$DEFCONFIG"
           make ARCH=arm64 olddefconfig
-          cp .config "$GITHUB_WORKSPACE/V1.olddefconfig.config"
-          echo "=== V1 normalized symbol count ==="
-          grep -c '^CONFIG_' "$GITHUB_WORKSPACE/V1.olddefconfig.config"
+          cp .config "$GITHUB_WORKSPACE/V1.config"
+          echo "V1 CONFIG_ symbol lines: $(grep -c '^CONFIG_' "$GITHUB_WORKSPACE/V1.config")"
+          sha256sum "$GITHUB_WORKSPACE/V1.config"
 
-      - name: V2 - disable legacy android_usb and normalize
+      - name: V2 - disable legacy android_usb and resolve dependencies
         run: |
           set -e
-          cd "${{ steps.locate.outputs.root }}"
+          cd kernel
           scripts/config --file .config --disable USB_G_ANDROID
+          scripts/config --file .config --disable USB_ANDROID_SAMSUNG_COMPOSITE
           make ARCH=arm64 olddefconfig
           cp .config "$GITHUB_WORKSPACE/V2.config"
-          echo "=== V2 symbol count ==="
-          grep -c '^CONFIG_' "$GITHUB_WORKSPACE/V2.config"
+          echo "V2 CONFIG_ symbol lines: $(grep -c '^CONFIG_' "$GITHUB_WORKSPACE/V2.config")"
+          sha256sum "$GITHUB_WORKSPACE/V2.config"
 
-      - name: Diff V1 vs V2
+      - name: Produce V1_V2_CONFIG_DIFF.txt
         run: |
           set -e
           {
-            echo "### V1 vs V2 config diff"
+            echo "Note9-01 Kernel V2 PRE-FLIGHT - V1 vs V2 Kconfig dependency diff"
+            echo "=================================================================="
+            echo "KERNEL_REPO   = $KERNEL_REPO"
+            echo "KERNEL_COMMIT = $KERNEL_COMMIT"
+            echo "DEFCONFIG     = $DEFCONFIG"
+            echo "RUN_ID        = $GITHUB_RUN_ID"
             echo ""
-            echo "V1 = running kernel config (olddefconfig normalized)"
-            echo "V2 = same, with CONFIG_USB_G_ANDROID + CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE disabled"
+            echo "V1 = defconfig as shipped, normalized with 'make ARCH=arm64 olddefconfig'"
+            echo "V2 = same, with 'scripts/config --disable USB_G_ANDROID'"
+            echo "                    'scripts/config --disable USB_ANDROID_SAMSUNG_COMPOSITE'"
+            echo "     then re-normalized with 'make ARCH=arm64 olddefconfig'"
+            echo ""
+            echo "--- full config deltas (V1 -> V2) ---"
             echo ""
             echo '```diff'
-            diff -u V1.olddefconfig.config V2.config || true
+            diff -u V1.config V2.config || true
+            echo '```'
+            echo ""
+            echo "--- changed symbols only ---"
+            echo ""
+            echo '```'
+            diff V1.config V2.config | grep -E '^[<>]' || echo "(no differences)"
             echo '```'
           } > V1_V2_CONFIG_DIFF.txt
-          echo "=== DIFF SUMMARY ==="
-          diff V1.olddefconfig.config V2.config | grep -E '^[<>]' | sort | uniq -c | head -50 || true
+          echo "=== changed symbols ==="
+          diff V1.config V2.config | grep -E '^[<>]' || echo "(no differences)"
 
       - name: Protected-capability assertion
         run: |
           set -e
           MISSING=0
-          for sym in \
-            CONFIG_USB_CONFIGFS=y \
-            CONFIG_USB_CONFIGFS_F_UAC2=y \
-            CONFIG_USB_F_UAC2=y \
-            CONFIG_USB_CONFIGFS_F_FS=y \
-            CONFIG_USB_F_FS=y \
-            CONFIG_USB_LIBCOMPOSITE=y \
-            CONFIG_USB_GADGET=y \
-            CONFIG_USB_DWC3=y \
-            CONFIG_USB_DWC3_DUAL_ROLE=y \
-            CONFIG_USB_DWC3_EXYNOS=y \
-            CONFIG_USB_CONFIGFS_NCM=y \
-            CONFIG_USB_CONFIGFS_RNDIS=y \
-            CONFIG_USB_F_NCM=y \
-            CONFIG_USB_F_RNDIS=y \
-            CONFIG_USB_USBNET=y \
-            CONFIG_USB_NET_CDCETHER=y \
-            CONFIG_USB_NET_CDC_NCM=y \
-            CONFIG_USB_NET_AX8817X=y \
-            CONFIG_USB_NET_AX88179_178A=y \
-            CONFIG_USB_NET_SMSC75XX=y \
-            CONFIG_USB_NET_SMSC95XX=y \
-            CONFIG_USB_XHCI_HCD=y \
-            CONFIG_USB_STORAGE=y \
-            CONFIG_USB_HID=y \
-            CONFIG_NET_CORE=y \
-            CONFIG_ETHERNET=y \
-            ; do
-            if grep -qx "$sym" V2.config; then
-              echo "PRESERVED $sym"
+          echo "=== PROTECTED CAPABILITY CHECK (against V2.config) ==="
+          check() {
+            if grep -qx "$1" V2.config; then
+              echo "PRESERVED  $1"
             else
-              echo "!!! LOST   $sym"
+              echo "LOST       $1"
               MISSING=$((MISSING+1))
             fi
-          done
-          echo ""
-          echo "=== symbols that changed ==="
-          diff V1.olddefconfig.config V2.config | grep -E '^[<>]' || echo "(none)"
+          }
+          check CONFIG_USB_GADGET=y
+          check CONFIG_USB_LIBCOMPOSITE=y
+          check CONFIG_USB_CONFIGFS=y
+          check CONFIG_USB_CONFIGFS_F_UAC2=y
+          check CONFIG_USB_F_UAC2=y
+          check CONFIG_USB_CONFIGFS_F_FS=y
+          check CONFIG_USB_F_FS=y
+          check CONFIG_USB_CONFIGFS_UEVENT=y
+          check CONFIG_USB_CONFIGFS_ACM=y
+          check CONFIG_USB_CONFIGFS_NCM=y
+          check CONFIG_USB_CONFIGFS_RNDIS=y
+          check CONFIG_USB_CONFIGFS_F_MTP=y
+          check CONFIG_USB_CONFIGFS_F_PTP=y
+          check CONFIG_USB_CONFIGFS_F_DM=y
+          check CONFIG_USB_CONFIGFS_F_ACC=y
+          check CONFIG_USB_CONFIGFS_F_AUDIO_SRC=y
+          check CONFIG_USB_CONFIGFS_F_CONN_GADGET=y
+          check CONFIG_USB_CONFIGFS_F_MIDI=y
+          check CONFIG_USB_F_NCM=y
+          check CONFIG_USB_F_RNDIS=y
+          check CONFIG_USB_F_ACM=y
+          check CONFIG_USB_DWC3=y
+          check CONFIG_USB_DWC3_DUAL_ROLE=y
+          check CONFIG_USB_DWC3_EXYNOS=y
+          check CONFIG_USB_XHCI_HCD=y
+          check CONFIG_USB_XHCI_PLATFORM=y
+          check CONFIG_USB_USBNET=y
+          check CONFIG_USB_NET_CDCETHER=y
+          check CONFIG_USB_NET_CDC_NCM=y
+          check CONFIG_USB_NET_CDC_EEM=y
+          check CONFIG_USB_NET_CDC_MBIM=y
+          check CONFIG_USB_NET_AX8817X=y
+          check CONFIG_USB_NET_AX88179_178A=y
+          check CONFIG_USB_NET_SMSC75XX=y
+          check CONFIG_USB_NET_SMSC95XX=y
+          check CONFIG_USB_NET_NET1080=y
+          check CONFIG_USB_NET_ZAURUS=y
+          check CONFIG_USB_STORAGE=y
+          check CONFIG_USB_HID=y
+          check CONFIG_NET_CORE=y
+          check CONFIG_ETHERNET=y
+          check CONFIG_NETDEVICES=y
           echo ""
           echo "PROTECTED_MISSING=$MISSING"
+          {
+            echo ""
+            echo "PROTECTED_CAPABILITY_RESULT:"
+            echo "  protected symbols missing in V2: $MISSING"
+          } >> V1_V2_CONFIG_DIFF.txt
           if [ "$MISSING" -ne 0 ]; then
             echo "V2_PREFLIGHT=FAIL"
             exit 1
           fi
           echo "V2_PREFLIGHT=PASS"
 
-      - name: Upload audit artifacts
+      - name: Upload config audit artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: note9-v2-preflight-config-audit
           path: |
             V1.config
-            V1.olddefconfig.config
             V2.config
             V1_V2_CONFIG_DIFF.txt
           retention-days: 30
