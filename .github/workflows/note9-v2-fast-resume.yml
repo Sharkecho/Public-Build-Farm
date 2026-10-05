@@ -122,6 +122,24 @@ jobs:
               s=s.replace(anchor, anchor+chr(10)+inc)
           p.write_text(s)
           assert inc in p.read_text().splitlines()
+
+          p=Path("drivers/usb/gadget/function/f_ncm.c")
+          s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE\nextern struct device *create_function_device(char *name);"
+          compat="""#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+void set_ncm_ready(bool ready)
+{
+    ncm_connect = ready;
+}
+EXPORT_SYMBOL(set_ncm_ready);
+#endif
+
+"""
+          if compat not in s:
+              if marker not in s:
+                  raise SystemExit("f_ncm compatibility anchor missing")
+              s=s.replace(marker, compat+marker)
+          p.write_text(s)
           PY
           mkdir -p out/uac2
           make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
@@ -135,6 +153,24 @@ jobs:
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.uac2"
           sha256sum "$GITHUB_WORKSPACE/Image.uac2"
 
+      - name: Save KERNEL_OUT checkpoint even on failure
+        if: ${{ always() }}
+        run: |
+          mkdir -p kernel-out-checkpoint
+          if [ -d kernel/out/uac2 ]; then
+            tar -C kernel/out -I 'zstd -3 -T0' -cf kernel-out-checkpoint/out-uac2.tar.zst uac2 || true
+          fi
+          cp kernel/out/uac2/.config kernel-out-checkpoint/V2.config 2>/dev/null || true
+          printf 'SOURCE_COMMIT=%s\nWORKFLOW_COMMIT=%s\n' "$KERNEL_COMMIT" "$GITHUB_SHA" > kernel-out-checkpoint/IDENTITY.txt
+          find kernel-out-checkpoint -type f -maxdepth 1 -exec sha256sum {} \; > kernel-out-checkpoint/SHA256SUMS || true
+      - name: Upload KERNEL_OUT checkpoint even on failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-kernel-out-${{ github.run_id }}
+          path: kernel-out-checkpoint/
+          retention-days: 30
+          if-no-files-found: warn
       - name: Save V2 kernel checkpoint
         run: |
           cp kernel/out/uac2/.config V2.config
