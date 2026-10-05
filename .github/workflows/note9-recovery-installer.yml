@@ -2,6 +2,11 @@ name: Note9 Recovery Installer Package
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/note9-v3-package-trigger.txt"
 
 permissions:
   actions: read
