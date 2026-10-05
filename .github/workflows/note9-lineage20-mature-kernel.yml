@@ -93,18 +93,6 @@ jobs:
           grep -q 'const unsigned long decon_clocks_table' "$FILE"
           ! grep -qE '41\.7|137\.5|62\.5' "$FILE"
           git diff --check
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path("drivers/usb/gadget/configfs.c")
-          s=p.read_text()
-          inc="#include <linux/usblog_proc_notify.h>"
-          anchor="#include <linux/soc/samsung/exynos-soc.h>"
-          if inc not in s:
-              if anchor not in s:
-                  raise SystemExit("configfs include anchor missing")
-              s=s.replace(anchor, anchor+"\\n"+inc)
-          p.write_text(s)
-          PY
           git diff -- "$FILE"
 
       - name: Diagnostic compile — collect legacy failures
@@ -173,6 +161,18 @@ jobs:
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
           export LLVM=1
           export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/usb/gadget/configfs.c")
+          s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"
+          anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s:
+              if anchor not in s:
+                  raise SystemExit("configfs include anchor missing")
+              s=s.replace(anchor, anchor+chr(10)+inc)
+          p.write_text(s)
+          PY
           mkdir -p out/uac2
           make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
           scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
