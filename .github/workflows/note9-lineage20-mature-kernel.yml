@@ -30,13 +30,24 @@ jobs:
           git checkout --detach "$KERNEL_COMMIT"
           test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
 
+      - name: Restore toolchain cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            compiler/clang-r416183
+            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          key: note9-toolchains-r416183-apollo-gcc49-v1
+
       - name: Install pinned AOSP Clang
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$GITHUB_WORKSPACE/compiler/clang-r416183"
           curl -fL --retry 4 "$CLANG_URL" | tar -xz -C "$GITHUB_WORKSPACE/compiler/clang-r416183"
           "$GITHUB_WORKSPACE/compiler/clang-r416183/bin/clang" --version
 
       - name: Import Apollo GCC 4.9 companion toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           ARCHIVE="$RUNNER_TEMP/apollo.tar.gz"
@@ -95,6 +106,31 @@ jobs:
           git diff --check
           git diff -- "$FILE"
 
+      - name: Restore latest KERNEL_OUT checkpoint
+        id: restore-kernel-out
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p restore-artifact
+          ART_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired==false and (.name|startswith("note9-v2-kernel-out-")))] | sort_by(.created_at) | reverse | .[0].id // empty')"
+          if [ -z "$ART_ID" ]; then
+            echo "restored=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ART_ID/zip" > checkpoint.zip
+          unzip -q checkpoint.zip -d restore-artifact
+          test -s restore-artifact/IDENTITY.txt
+          grep -q "^SOURCE_COMMIT=$KERNEL_COMMIT$" restore-artifact/IDENTITY.txt || { echo "restored=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ -s restore-artifact/out-uac2.tar.zst ]; then
+            mkdir -p kernel/out
+            tar -C kernel/out -I zstd -xf restore-artifact/out-uac2.tar.zst
+            echo "restored=true" >> "$GITHUB_OUTPUT"
+            echo "RESTORED_ARTIFACT_ID=$ART_ID"
+          else
+            echo "restored=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build UAC2 variant from same verified source
         working-directory: kernel
         env:
@@ -141,8 +177,16 @@ EXPORT_SYMBOL(set_ncm_ready);
               s=s.replace(marker, compat+marker)
           p.write_text(s)
           PY
-          mkdir -p out/uac2
-          make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
+          if [ ! -s out/uac2/.config ]; then
+            mkdir -p out/uac2
+            make O=out/uac2 ARCH=arm64 "$DEFCONFIG"
+            scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
+            scripts/config --file out/uac2/.config -d USB_G_ANDROID
+            scripts/config --file out/uac2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
+            make O=out/uac2 ARCH=arm64 olddefconfig
+          else
+            echo "KERNEL_OUT_RESTORED=YES"
+          fi
           scripts/config --file out/uac2/.config -e USB_CONFIGFS_F_UAC2
           scripts/config --file out/uac2/.config -d USB_G_ANDROID
           scripts/config --file out/uac2/.config -d USB_ANDROID_SAMSUNG_COMPOSITE
