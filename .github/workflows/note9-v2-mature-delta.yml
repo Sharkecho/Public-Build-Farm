@@ -86,7 +86,25 @@ jobs:
           make O=out/uac2 ARCH=arm64 olddefconfig
           grep '^CONFIG_USB_CONFIGFS_F_UAC2=y$' out/uac2/.config
           grep '^# CONFIG_USB_G_ANDROID is not set$' out/uac2/.config
-          grep '^# CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE is not set$' out/uac2/.config
+          ! grep -q '^CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE=y
+          make O=out/uac2 ARCH=arm64 -j"$(nproc)"
+          test -s out/uac2/arch/arm64/boot/Image
+          test -s out/uac2/drivers/usb/gadget/function/f_uac2.o
+          test -s out/uac2/drivers/usb/gadget/function/usb_f_uac2.o
+          cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.v2"
+          cp out/uac2/.config "$GITHUB_WORKSPACE/V2.config"
+          sha256sum "$GITHUB_WORKSPACE/Image.v2" "$GITHUB_WORKSPACE/V2.config" > "$GITHUB_WORKSPACE/SHA256SUMS"
+      - name: Upload V2 mature delta checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v2-mature-delta-kernel
+          path: |
+            Image.v2
+            V2.config
+            SHA256SUMS
+          retention-days: 30
+ out/uac2/.config
+          echo 'V2_USB_DELTA_GATE=PASS'
           make O=out/uac2 ARCH=arm64 -j"$(nproc)"
           test -s out/uac2/arch/arm64/boot/Image
           test -s out/uac2/drivers/usb/gadget/function/f_uac2.o
