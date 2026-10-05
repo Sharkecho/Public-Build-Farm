@@ -1,0 +1,100 @@
+name: Note9 Recovery Installer Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Fetch frozen verified kernel and DT
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir input
+          gh run download 37299363583 --repo "$GITHUB_REPOSITORY" --name note9-n960n-uac2-package-only --dir input
+          IMG="$(find input -type f -name Image.uac2 | head -1)"
+          DT="$(find input -type f -name dt.img | head -1)"
+          echo "3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6  $IMG" | sha256sum -c -
+          echo "c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35  $DT" | sha256sum -c -
+          cp "$IMG" Image.uac2
+          cp "$DT" dt.img
+
+      - name: Import mature Apollo recovery installer skeleton
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 -o apollo.tar.gz \
+            "https://github.com/Redminote11tech/exynos9810-kernel/archive/refs/heads/duhan-%284.9.337%29.tar.gz"
+          tar -xzf apollo.tar.gz
+          ROOT="$(find . -maxdepth 1 -type d -name 'exynos9810-kernel-*' | head -1)"
+          cp -a "$ROOT/Apollo/kernelzip" installer
+          test -x installer/floyd/tools/magiskboot || chmod +x installer/floyd/tools/magiskboot
+          rm -f installer/floyd/*-kernel installer/floyd/*-dtb
+          cp Image.uac2 installer/floyd/kernel
+          cp dt.img installer/floyd/extra
+
+      - name: Create N960N-only installer logic
+        run: |
+          set -euo pipefail
+          cat > installer/META-INF/com/google/android/update-binary <<'EOF'
+          #!/sbin/sh
+          OUTFD="/proc/self/fd/$2"
+          ZIP="$3"
+          ui_print(){ echo -e "ui_print $1\nui_print" > "$OUTFD"; }
+          CMD="$(cat /proc/cmdline 2>/dev/null)"
+          echo "$CMD" | grep -q 'N960N' || { ui_print "! SM-N960N required"; exit 1; }
+          rm -rf /tmp/n9uac2 /tmp/n9uac2-work
+          mkdir -p /tmp/n9uac2 /tmp/n9uac2-work
+          cd /tmp/n9uac2
+          unzip -o "$ZIP" >/dev/null || exit 1
+          chmod 755 floyd/tools/*
+          BB=floyd/tools/busybox
+          BOOT="$($BB find /dev/block/platform -iname boot | head -1)"
+          [ -n "$BOOT" ] || { ui_print "! boot partition not found"; exit 1; }
+          ui_print "- SM-N960N detected"
+          ui_print "- Backing up current boot in /tmp"
+          dd if="$BOOT" of=/tmp/n9uac2-work/original-boot.img bs=4096 || exit 1
+          cd /tmp/n9uac2-work
+          cp /tmp/n9uac2/floyd/tools/magiskboot ./magiskboot
+          chmod 755 magiskboot
+          ./magiskboot unpack original-boot.img || exit 1
+          [ -f kernel ] || exit 1
+          [ -f extra ] || exit 1
+          cp /tmp/n9uac2/floyd/kernel kernel
+          cp /tmp/n9uac2/floyd/extra extra
+          ./magiskboot repack -n original-boot.img || exit 1
+          [ -s new-boot.img ] || exit 1
+          ui_print "- Repack complete"
+          ui_print "- Installer package verified; boot write is intentionally not automated in this build"
+          ui_print "- new boot: /tmp/n9uac2-work/new-boot.img"
+          sync
+          EOF
+          chmod 755 installer/META-INF/com/google/android/update-binary
+
+      - name: Package and verify installer
+        run: |
+          set -euo pipefail
+          {
+            echo "DEVICE=SM-N960N"
+            echo "ROM=LineageOS 20"
+            echo "KERNEL_SHA256=3b70691c79625811fe0b53920046fde0cd3b6492d64784273b7e2034fd5021c6"
+            echo "DT_SHA256=c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35"
+            echo "MODE=RECOVERY_REPACK_NO_AUTOWRITE"
+          } > installer/BUILD-IDENTITY.txt
+          (cd installer && zip -r9 ../Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip .)
+          unzip -t Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip
+          sha256sum Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip > Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip.sha256
+
+      - name: Upload recovery installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-n960n-lineage20-uac2-recovery-repack
+          path: |
+            Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip
+            Note9-N960N-Lineage20-UAC2-Recovery-Repack.zip.sha256
+          retention-days: 30
