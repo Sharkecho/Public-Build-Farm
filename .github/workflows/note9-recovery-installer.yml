@@ -22,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p input/kernel input/dt
-          gh run download 37403962937 --repo "$GITHUB_REPOSITORY" --name note9-v3-a2min-37403962937 --dir input/kernel
+          gh run download 37403962937 --repo "$GITHUB_REPOSITORY" --name note9-v4-from-v3-a2min-37403962937 --dir input/kernel
           gh run download 37299363583 --repo "$GITHUB_REPOSITORY" --name note9-n960n-uac2-package-only --dir input/dt
           IMG="$(find input/kernel -type f -name Image.v4 | head -1)"
           DT="$(find input/dt -type f -name dt.img | head -1)"
