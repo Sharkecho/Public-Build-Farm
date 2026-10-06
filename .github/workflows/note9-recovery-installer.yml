@@ -6,7 +6,7 @@ on:
     branches:
       - main
     paths:
-      - ".github/note9-v3-package-trigger.txt"
+      - ".github/note9-v4-package-trigger.txt"
 
 permissions:
   actions: read
@@ -22,11 +22,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p input/kernel input/dt
-          gh run download 37380706533 --repo "$GITHUB_REPOSITORY" --name note9-v3-a2min-37380706533 --dir input/kernel
+          gh run download 37403962937 --repo "$GITHUB_REPOSITORY" --name note9-v3-a2min-37403962937 --dir input/kernel
           gh run download 37299363583 --repo "$GITHUB_REPOSITORY" --name note9-n960n-uac2-package-only --dir input/dt
-          IMG="$(find input/kernel -type f -name Image.v3 | head -1)"
+          IMG="$(find input/kernel -type f -name Image.v4 | head -1)"
           DT="$(find input/dt -type f -name dt.img | head -1)"
-          echo "e54d27cb5c8d47e367d26dd43b30bb52378d1819aacf64218648c4e515c404bd  $IMG" | sha256sum -c -
+          echo "35b6bfa944b0c36c1bd459b4453082c9765849b4d37e21c03fe531b4adbd8ee6  $IMG" | sha256sum -c -
           echo "c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35  $DT" | sha256sum -c -
           cp "$IMG" Image.uac2
           cp "$DT" dt.img
@@ -88,19 +88,19 @@ jobs:
           {
             echo "DEVICE=SM-N960N"
             echo "ROM=LineageOS 20"
-            echo "KERNEL_SHA256=e54d27cb5c8d47e367d26dd43b30bb52378d1819aacf64218648c4e515c404bd"
+            echo "KERNEL_SHA256=35b6bfa944b0c36c1bd459b4453082c9765849b4d37e21c03fe531b4adbd8ee6"
             echo "DT_SHA256=c83411e3e994566b21b27fecdf13518103a7d49640fa8a0bd42d4b3e1ddf9a35"
-            echo "MODE=V3_A2MIN_RECOVERY_REPACK_NO_AUTOWRITE"
+            echo "MODE=V4_RECOVERY_REPACK_NO_AUTOWRITE"
           } > installer/BUILD-IDENTITY.txt
-          (cd installer && zip -r9 ../Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip .)
-          unzip -t Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip
-          sha256sum Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip > Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip.sha256
+          (cd installer && zip -r9 ../Note9-N960N-Lineage20-UAC2-V4-Recovery-Repack.zip .)
+          unzip -t Note9-N960N-Lineage20-UAC2-V4-Recovery-Repack.zip
+          sha256sum Note9-N960N-Lineage20-UAC2-V4-Recovery-Repack.zip > Note9-N960N-Lineage20-UAC2-V4-Recovery-Repack.zip.sha256
 
       - name: Upload recovery installer
         uses: actions/upload-artifact@v4
         with:
-          name: note9-n960n-lineage20-uac2-v3-a2min-recovery-repack
+          name: note9-n960n-lineage20-uac2-v4-recovery-repack
           path: |
-            Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip
-            Note9-N960N-Lineage20-UAC2-V3-A2MIN-Recovery-Repack.zip.sha256
+            Note9-N960N-Lineage20-UAC2-V4-Recovery-Repack.zip
+            Note9-N960N-Lineage20-UAC2-V4-Recovery-Repack.zip.sha256
           retention-days: 30
