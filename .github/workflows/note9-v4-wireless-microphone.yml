@@ -1,0 +1,166 @@
+name: Note9 V4 Wireless Microphone Incremental Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/note9-v4-trigger.txt"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
+  KERNEL_COMMIT: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
+  V2_ARTIFACT_ID: "11365833883"
+  PATCH_PATH: patches/V4_Wireless_microphone_oneway.patch
+  PATCH_SHA256: D2871A9EC844F591E71F7AC51D8733AE642E0EDFFA5D48885A0596F7A29BCA29
+
+jobs:
+  v4-incremental:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout build-farm
+        uses: actions/checkout@v4
+        with:
+          path: farm
+
+      - name: Verify frozen V4 patch
+        run: |
+          set -euo pipefail
+          echo "$PATCH_SHA256  farm/$PATCH_PATH" | sha256sum -c -
+
+      - name: Install resume dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev python3 unzip zstd curl
+
+      - name: Checkout exact LineageOS kernel source
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none "$KERNEL_REPO" kernel
+          cd kernel
+          git fetch --depth=1 origin "$KERNEL_COMMIT"
+          git checkout --detach "$KERNEL_COMMIT"
+          test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
+
+      - name: Restore V2 KERNEL_OUT checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V2_ARTIFACT_ID/zip" > v2-checkpoint.zip
+          mkdir -p v2-checkpoint
+          unzip -q v2-checkpoint.zip -d v2-checkpoint
+          test -s v2-checkpoint/out-uac2.tar.zst
+          test -s v2-checkpoint/IDENTITY.txt
+          grep -q "^KERNEL_SOURCE=$KERNEL_COMMIT$" v2-checkpoint/IDENTITY.txt
+          mkdir -p kernel/out
+          tar -C kernel/out -I zstd -xf v2-checkpoint/out-uac2.tar.zst
+          test -s kernel/out/uac2/.config
+          grep -q '^CONFIG_USB_CONFIGFS_F_UAC2=y$' kernel/out/uac2/.config
+          grep -q '^CONFIG_USB_CONFIGFS_UEVENT=y$' kernel/out/uac2/.config
+          ! grep -q '^CONFIG_USB_G_ANDROID=y$' kernel/out/uac2/.config
+          ! grep -q '^CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE=y$' kernel/out/uac2/.config
+          echo "V2_CHECKPOINT_RESTORE=PASS"
+
+      - name: Reapply V2 source deltas
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("drivers/video/fbdev/exynos/dpu_9810/decon_reg.c")
+          s=p.read_text()
+          s=s.replace("const double decon_clocks_table[][CLK_ID_MAX] = {","const unsigned long decon_clocks_table[][CLK_ID_MAX] = {")
+          s=s.replace("{41.7, 137.5, 400, 66, 62.5, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},","{41, 137, 400, 66, 62, 1440 * 2560, MIC_COMP_RATIO_1_3,  0},")
+          s=s.replace("{ 141, 137.5, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},","{ 141, 137, 400, 66,  141, 1440 * 2560,    MIC_COMP_BYPASS,  0},")
+          p.write_text(s)
+
+          p=Path("drivers/usb/gadget/configfs.c")
+          s=p.read_text()
+          inc="#include <linux/usblog_proc_notify.h>"
+          anchor="#include <linux/soc/samsung/exynos-soc.h>"
+          if inc not in s:
+              if anchor not in s:
+                  raise SystemExit("configfs V2 include anchor missing")
+              s=s.replace(anchor, anchor+chr(10)+inc)
+          p.write_text(s)
+
+          p=Path("drivers/usb/gadget/function/f_ncm.c")
+          s=p.read_text()
+          marker="#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"extern struct device *create_function_device(char *name);"
+          compat="#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE"+chr(10)+"void set_ncm_ready(bool ready)"+chr(10)+"{"+chr(10)+"    (void)ready;"+chr(10)+"}"+chr(10)+"EXPORT_SYMBOL(set_ncm_ready);"+chr(10)+"#endif"+chr(10)+chr(10)
+          if compat not in s:
+              if marker not in s:
+                  raise SystemExit("f_ncm V2 anchor missing")
+              s=s.replace(marker,compat+marker)
+          p.write_text(s)
+          PY
+
+      - name: Apply reviewed V4 Wireless microphone patch
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          git apply --check "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git apply "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git diff --check
+          git diff -- drivers/usb/gadget/configfs.c > "$GITHUB_WORKSPACE/V4_PATCH.diff"
+          grep -q 'uac2_func' "$GITHUB_WORKSPACE/V4_PATCH.diff"
+          echo "V4_PATCH_APPLY=PASS"
+
+      - name: Restore proven toolchains
+        id: toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            compiler/clang-r416183
+            kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+          key: note9-v1gold-toolchains-r416183-apollo49-v1
+
+      - name: Verify toolchain cache
+        run: |
+          set -euo pipefail
+          test -x compiler/clang-r416183/bin/clang
+          test -d kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
+
+      - name: Incremental make V4
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          SUBARCH: arm64
+          ANDROID_MAJOR_VERSION: q
+          PLATFORM_VERSION: 13.0.0
+        run: |
+          set -euo pipefail
+          TC="$GITHUB_WORKSPACE/compiler/clang-r416183"
+          export PATH="$TC/bin:$PATH"
+          export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
+          export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+          touch drivers/usb/gadget/configfs.c
+          make O=out/uac2 ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/v4-build.log"
+          test -s out/uac2/arch/arm64/boot/Image
+          cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.v4"
+          sha256sum "$GITHUB_WORKSPACE/Image.v4" | tee "$GITHUB_WORKSPACE/Image.v4.sha256"
+
+      - name: Save V4 checkpoint
+        if: ${{ always() }}
+        run: |
+          mkdir -p v4-result
+          cp Image.v4 Image.v4.sha256 V4_PATCH.diff v4-build.log v4-result/ 2>/dev/null || true
+          cp kernel/out/uac2/.config v4-result/V4.config 2>/dev/null || true
+          tar -C kernel/out -I 'zstd -3 -T0' -cf v4-result/out-uac2-v4.tar.zst uac2 || true
+          printf 'BASE_V2_ARTIFACT=%s\nKERNEL_SOURCE=%s\nPATCH_SHA256=%s\nWORKFLOW_SHA=%s\n' "$V2_ARTIFACT_ID" "$KERNEL_COMMIT" "$PATCH_SHA256" "$GITHUB_SHA" > v4-result/BUILD-IDENTITY.txt
+
+      - name: Upload V4 checkpoint
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-v4-wireless-microphone-${{ github.run_id }}
+          path: v4-result/
+          retention-days: 30
