@@ -16,8 +16,11 @@ env:
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_exynos9810
   KERNEL_COMMIT: 6a9461f9460ca51d1217e5069a5d5556fcc79e63
   V2_ARTIFACT_ID: "11365833883"
-  PATCH_PATH: patches/V4_Wireless_microphone_oneway.patch
-  PATCH_SHA256: D2871A9EC844F591E71F7AC51D8733AE642E0EDFFA5D48885A0596F7A29BCA29
+  V3_ARTIFACT_ID: "11376065238"
+  V3_PATCH_PATH: note9-01/patches/V3_A2_MIN_configfs.patch
+  V3_PATCH_SHA256: 9C54D93775CF56A97080233D272C42830956C6A8B382093F97491B6FA43ADCEB
+  V4_CUMULATIVE_PATCH_PATH: patches/V4_Wireless_microphone_oneway.patch
+  V4_CUMULATIVE_PATCH_SHA256: D2871A9EC844F591E71F7AC51D8733AE642E0EDFFA5D48885A0596F7A29BCA29
 
 jobs:
   v4-incremental:
@@ -29,10 +32,11 @@ jobs:
         with:
           path: farm
 
-      - name: Verify frozen V4 patch
+      - name: Verify frozen V3 and V4 patches
         run: |
           set -euo pipefail
-          echo "$PATCH_SHA256  farm/$PATCH_PATH" | sha256sum -c -
+          echo "$V3_PATCH_SHA256  farm/$V3_PATCH_PATH" | sha256sum -c -
+          echo "$V4_CUMULATIVE_PATCH_SHA256  farm/$V4_CUMULATIVE_PATCH_PATH" | sha256sum -c -
 
       - name: Install resume dependencies
         run: |
@@ -48,25 +52,29 @@ jobs:
           git checkout --detach "$KERNEL_COMMIT"
           test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
 
-      - name: Restore V2 KERNEL_OUT checkpoint
+      - name: Restore V3 KERNEL_OUT checkpoint
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V2_ARTIFACT_ID/zip" > v2-checkpoint.zip
-          mkdir -p v2-checkpoint
-          unzip -q v2-checkpoint.zip -d v2-checkpoint
-          test -s v2-checkpoint/out-uac2.tar.zst
-          test -s v2-checkpoint/IDENTITY.txt
-          grep -q "^KERNEL_SOURCE=$KERNEL_COMMIT$" v2-checkpoint/IDENTITY.txt
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$V3_ARTIFACT_ID/zip" > v3-checkpoint.zip
+          mkdir -p v3-checkpoint
+          unzip -q v3-checkpoint.zip -d v3-checkpoint
+
+          test -s v3-checkpoint/out-uac2-v3.tar.zst
+          test -s v3-checkpoint/BUILD-IDENTITY.txt
+          grep -q "^BASE_V2_ARTIFACT=$V2_ARTIFACT_ID$" v3-checkpoint/BUILD-IDENTITY.txt
+          grep -q "^KERNEL_SOURCE=$KERNEL_COMMIT$" v3-checkpoint/BUILD-IDENTITY.txt
+          grep -qi "^PATCH_SHA256=$V3_PATCH_SHA256$" v3-checkpoint/BUILD-IDENTITY.txt
+
           mkdir -p kernel/out
-          tar -C kernel/out -I zstd -xf v2-checkpoint/out-uac2.tar.zst
+          tar -C kernel/out -I zstd -xf v3-checkpoint/out-uac2-v3.tar.zst
           test -s kernel/out/uac2/.config
           grep -q '^CONFIG_USB_CONFIGFS_F_UAC2=y$' kernel/out/uac2/.config
           grep -q '^CONFIG_USB_CONFIGFS_UEVENT=y$' kernel/out/uac2/.config
           ! grep -q '^CONFIG_USB_G_ANDROID=y$' kernel/out/uac2/.config
           ! grep -q '^CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE=y$' kernel/out/uac2/.config
-          echo "V2_CHECKPOINT_RESTORE=PASS"
+          echo "V3_CHECKPOINT_RESTORE=PASS"
 
       - name: Reapply V2 source deltas
         working-directory: kernel
@@ -102,16 +110,64 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Apply reviewed V4 Wireless microphone patch
+      - name: Reconstruct frozen V3 source state
         working-directory: kernel
         run: |
           set -euo pipefail
-          git apply --check "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
-          git apply "$GITHUB_WORKSPACE/farm/$PATCH_PATH"
+          git apply --check "$GITHUB_WORKSPACE/farm/$V3_PATCH_PATH"
+          git apply "$GITHUB_WORKSPACE/farm/$V3_PATCH_PATH"
           git diff --check
-          git diff -- drivers/usb/gadget/configfs.c > "$GITHUB_WORKSPACE/V4_PATCH.diff"
-          grep -q 'uac2_func' "$GITHUB_WORKSPACE/V4_PATCH.diff"
-          echo "V4_PATCH_APPLY=PASS"
+          grep -q 'V3 A2-MIN' drivers/usb/gadget/configfs.c
+          echo "V3_SOURCE_RECONSTRUCT=PASS"
+
+      - name: Generate and apply pure V3 to V4 delta
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/v3-state" "$GITHUB_WORKSPACE/v4-target"
+          cp drivers/usb/gadget/configfs.c "$GITHUB_WORKSPACE/v3-state/configfs.c"
+          cp drivers/usb/gadget/function/f_uac2.c "$GITHUB_WORKSPACE/v3-state/f_uac2.c"
+
+          # Build the exact cumulative V4 target from the same frozen source.
+          git apply -R "$GITHUB_WORKSPACE/farm/$V3_PATCH_PATH"
+          git apply --check "$GITHUB_WORKSPACE/farm/$V4_CUMULATIVE_PATCH_PATH"
+          git apply "$GITHUB_WORKSPACE/farm/$V4_CUMULATIVE_PATCH_PATH"
+          cp drivers/usb/gadget/configfs.c "$GITHUB_WORKSPACE/v4-target/configfs.c"
+          cp drivers/usb/gadget/function/f_uac2.c "$GITHUB_WORKSPACE/v4-target/f_uac2.c"
+
+          # Return to the frozen V3 source state, then derive only V3 -> V4.
+          cp "$GITHUB_WORKSPACE/v3-state/configfs.c" drivers/usb/gadget/configfs.c
+          cp "$GITHUB_WORKSPACE/v3-state/f_uac2.c" drivers/usb/gadget/function/f_uac2.c
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import difflib
+
+          pairs = [
+              ("drivers/usb/gadget/configfs.c", Path("../v3-state/configfs.c"), Path("../v4-target/configfs.c")),
+              ("drivers/usb/gadget/function/f_uac2.c", Path("../v3-state/f_uac2.c"), Path("../v4-target/f_uac2.c")),
+          ]
+          out = []
+          for rel, old, new in pairs:
+              a = old.read_text().splitlines(keepends=True)
+              b = new.read_text().splitlines(keepends=True)
+              out.extend(difflib.unified_diff(a, b, fromfile="a/"+rel, tofile="b/"+rel, n=3))
+          p = Path("../V4_FROM_V3_A2_MIN.patch")
+          p.write_text("".join(out))
+          if p.stat().st_size == 0:
+              raise SystemExit("generated V3->V4 delta is empty")
+          PY
+
+          git apply --check "$GITHUB_WORKSPACE/V4_FROM_V3_A2_MIN.patch"
+          git apply "$GITHUB_WORKSPACE/V4_FROM_V3_A2_MIN.patch"
+          git diff --check
+
+          cmp drivers/usb/gadget/configfs.c "$GITHUB_WORKSPACE/v4-target/configfs.c"
+          cmp drivers/usb/gadget/function/f_uac2.c "$GITHUB_WORKSPACE/v4-target/f_uac2.c"
+
+          sha256sum "$GITHUB_WORKSPACE/V4_FROM_V3_A2_MIN.patch" | tee "$GITHUB_WORKSPACE/V4_FROM_V3_A2_MIN.patch.sha256"
+          echo "V3_TO_V4_DELTA_VERIFY=PASS"
 
       - name: Restore proven toolchains
         id: toolchains
@@ -128,7 +184,7 @@ jobs:
           test -x compiler/clang-r416183/bin/clang
           test -d kernel/toolchain/gcc-cfp/gcc-ibv-jopp/aarch64-linux-android-4.9
 
-      - name: Incremental make V4
+      - name: Incremental make V4 from V3 checkpoint
         working-directory: kernel
         env:
           ARCH: arm64
@@ -142,8 +198,11 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip LLVM=1
           export KCFLAGS="-Wno-error=unused-variable -Wno-error=strict-prototypes -Wno-error=return-type -Wno-error=format -Wno-error=enum-compare"
+
           touch drivers/usb/gadget/configfs.c
+          touch drivers/usb/gadget/function/f_uac2.c
           make O=out/uac2 ARCH=arm64 -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/v4-build.log"
+
           test -s out/uac2/arch/arm64/boot/Image
           cp out/uac2/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image.v4"
           sha256sum "$GITHUB_WORKSPACE/Image.v4" | tee "$GITHUB_WORKSPACE/Image.v4.sha256"
@@ -152,15 +211,20 @@ jobs:
         if: ${{ always() }}
         run: |
           mkdir -p v4-result
-          cp Image.v4 Image.v4.sha256 V4_PATCH.diff v4-build.log v4-result/ 2>/dev/null || true
+          cp Image.v4 Image.v4.sha256 v4-build.log V4_FROM_V3_A2_MIN.patch V4_FROM_V3_A2_MIN.patch.sha256 v4-result/ 2>/dev/null || true
           cp kernel/out/uac2/.config v4-result/V4.config 2>/dev/null || true
           tar -C kernel/out -I 'zstd -3 -T0' -cf v4-result/out-uac2-v4.tar.zst uac2 || true
-          printf 'BASE_V2_ARTIFACT=%s\nKERNEL_SOURCE=%s\nPATCH_SHA256=%s\nWORKFLOW_SHA=%s\n' "$V2_ARTIFACT_ID" "$KERNEL_COMMIT" "$PATCH_SHA256" "$GITHUB_SHA" > v4-result/BUILD-IDENTITY.txt
+
+          DELTA_SHA=""
+          if test -s V4_FROM_V3_A2_MIN.patch; then
+            DELTA_SHA="$(sha256sum V4_FROM_V3_A2_MIN.patch | awk '{print $1}')"
+          fi
+          printf 'BASE_V3_ARTIFACT=%s\nBASE_V2_ARTIFACT=%s\nKERNEL_SOURCE=%s\nV3_PATCH_SHA256=%s\nV4_CUMULATIVE_PATCH_SHA256=%s\nV4_FROM_V3_DELTA_SHA256=%s\nWORKFLOW_SHA=%s\n'             "$V3_ARTIFACT_ID" "$V2_ARTIFACT_ID" "$KERNEL_COMMIT" "$V3_PATCH_SHA256" "$V4_CUMULATIVE_PATCH_SHA256" "$DELTA_SHA" "$GITHUB_SHA"             > v4-result/BUILD-IDENTITY.txt
 
       - name: Upload V4 checkpoint
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: note9-v4-wireless-microphone-${{ github.run_id }}
+          name: note9-v4-from-v3-a2min-${{ github.run_id }}
           path: v4-result/
           retention-days: 30
