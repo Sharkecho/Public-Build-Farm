@@ -1,0 +1,103 @@
+name: AI Translator Android Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private ai-translator branch/tag/SHA to validate"
+        required: true
+        default: "main"
+        type: string
+      upload_apk:
+        description: "Explicitly publish the debug APK artifact"
+        required: true
+        default: false
+        type: boolean
+  repository_dispatch:
+    types: [ai-translator-android]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-translator-android-${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Validate private source token is configured
+        env:
+          BUILD_FARM_SOURCE_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_FARM_SOURCE_TOKEN"
+
+      - name: Checkout private AI Translator source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/ai-translator
+          ref: ${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Resolve Flutter dependencies
+        working-directory: source/mobile
+        run: flutter pub get
+
+      - name: Analyze Flutter project
+        working-directory: source/mobile
+        run: flutter analyze
+
+      - name: Run Flutter tests
+        working-directory: source/mobile
+        run: flutter test
+
+      - name: Build Android debug APK
+        working-directory: source/mobile
+        run: flutter build apk --debug
+
+      - name: Record build evidence
+        working-directory: source
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          APK="mobile/build/app/outputs/flutter-apk/app-debug.apk"
+          test -f "$APK"
+          echo "AI_TRANSLATOR_SOURCE_SHA=$SOURCE_SHA"
+          sha256sum "$APK"
+          {
+            echo "## AI Translator Android validation"
+            echo
+            echo "- Source ref: \`${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}\`"
+            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- Flutter analyze: PASS"
+            echo "- Flutter tests: PASS"
+            echo "- Android debug build: PASS"
+            echo "- APK uploaded: explicit opt-in only"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload debug APK only when explicitly requested
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.upload_apk) || (github.event_name == 'repository_dispatch' && github.event.client_payload.upload_apk == 'true') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-translator-debug-apk
+          path: source/mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 3
