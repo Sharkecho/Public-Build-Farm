@@ -1,6 +1,6 @@
 {
-  "source_ref": "ab36867254435df720f581a66c1c943a8e678b00",
+  "source_ref": "78b76f1b9eb8d7a1d968f3ed16abe47e30443ce1",
   "upload_apk": false,
   "requested_by": "Engineering-Control",
-  "reason": "AI Translator M1 Translation Core Android Gate"
+  "reason": "AI Translator M2 Device Intelligence Android native compile gate"
 }
