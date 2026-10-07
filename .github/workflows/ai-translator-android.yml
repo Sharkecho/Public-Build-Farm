@@ -15,12 +15,15 @@ on:
         type: boolean
   repository_dispatch:
     types: [ai-translator-android]
+  push:
+    paths:
+      - "requests/ai-translator/current.json"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ai-translator-android-${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}
+  group: ai-translator-android-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,6 +32,36 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Checkout build request
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          path: build-farm
+          fetch-depth: 1
+
+      - name: Resolve source ref and artifact policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+          INPUT_UPLOAD_APK: ${{ inputs.upload_apk }}
+          DISPATCH_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
+          DISPATCH_UPLOAD_APK: ${{ github.event.client_payload.upload_apk }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            SOURCE_REF="$(python3 -c 'import json; print(json.load(open("build-farm/requests/ai-translator/current.json"))["source_ref"])')"
+            UPLOAD_APK="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("upload_apk", False))).lower())')"
+          elif [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            SOURCE_REF="$DISPATCH_SOURCE_REF"
+            UPLOAD_APK="${DISPATCH_UPLOAD_APK:-false}"
+          else
+            SOURCE_REF="${INPUT_SOURCE_REF:-main}"
+            UPLOAD_APK="${INPUT_UPLOAD_APK:-false}"
+          fi
+          test -n "$SOURCE_REF"
+          echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
+          echo "UPLOAD_APK=$UPLOAD_APK" >> "$GITHUB_ENV"
+
       - name: Validate private source token is configured
         env:
           BUILD_FARM_SOURCE_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
@@ -40,7 +73,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/ai-translator
-          ref: ${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}
+          ref: ${{ env.SOURCE_REF }}
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           path: source
           persist-credentials: false
@@ -85,16 +118,16 @@ jobs:
           {
             echo "## AI Translator Android validation"
             echo
-            echo "- Source ref: \`${{ github.event.client_payload.source_ref || inputs.source_ref || 'main' }}\`"
-            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- Source ref: `$SOURCE_REF`"
+            echo "- Source SHA: `$SOURCE_SHA`"
             echo "- Flutter analyze: PASS"
             echo "- Flutter tests: PASS"
             echo "- Android debug build: PASS"
-            echo "- APK uploaded: explicit opt-in only"
+            echo "- APK uploaded: $UPLOAD_APK"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload debug APK only when explicitly requested
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.upload_apk) || (github.event_name == 'repository_dispatch' && github.event.client_payload.upload_apk == 'true') }}
+        if: env.UPLOAD_APK == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ai-translator-debug-apk
