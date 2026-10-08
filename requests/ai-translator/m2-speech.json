@@ -1,7 +1,7 @@
 {
-  "source_ref": "m2/real-vad-streaming-asr-assets-20261008",
+  "source_ref": "dd07a207d6a20955f26b4c923382e456b6dd99ed",
   "upload_model_artifacts": false,
   "requested_by": "AI Translator M2",
-  "reason": "Verify status/ai-translator/m2-speech.json publication and current real ONNX M2 gate",
-  "gate_version": "m2-real-speech-visibility-v3"
+  "reason": "M2 real ONNX CPU + offline security/stress regression; immutable source commit",
+  "gate_version": "m2-audio-real-model-security-stress-v1"
 }
