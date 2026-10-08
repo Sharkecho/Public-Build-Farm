@@ -50,6 +50,7 @@ jobs:
         run: |
           python3 -m py_compile scripts/prepare_m2_speech_models.py scripts/smoke_m2_speech_models.py
           python3 -m unittest discover -s tests -p test_m2_model_acquisition.py -v
+          python3 -m unittest discover -s tests -p test_m2_audio_security_stress.py -v
           python3 - <<'PY'
           import json
           from pathlib import Path
