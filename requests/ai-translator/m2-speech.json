@@ -1,0 +1,6 @@
+{
+  "source_ref": "m2/real-vad-streaming-asr-assets-20261008",
+  "upload_model_artifacts": false,
+  "requested_by": "AI Translator M2",
+  "reason": "Public Build Farm validation for Silero VAD and Zipformer real ONNX CPU inference"
+}
