@@ -1,6 +1,6 @@
 {
-  "source_ref": "954daded2f1c21a79a05c48730b8623159b2e664",
+  "source_ref": "f1a6aab4168503acc54b656328683b1bce57d4cc",
   "upload_apk": false,
   "requested_by": "Trustlyta M2 Android verification",
-  "reason": "Trustlyta client widget + overlay orb focused tests, Flutter analyze/full tests, Android debug compile; SG server independent"
+  "reason": "Trustlyta orb measured-level/reduced-motion UI regression and Android build; server independent"
 }
