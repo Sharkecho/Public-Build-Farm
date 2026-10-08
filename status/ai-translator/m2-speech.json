@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "gate": "m2-real-speech",
+  "state": "NOT_VERIFIED",
+  "verified_pass": false,
+  "description": "Status endpoint initialized. Waiting for next completed public-farm run; no model inference result asserted.",
+  "run_url": null,
+  "offline_model_manifest": "not_verified",
+  "real_onnx_cpu": "not_verified"
+}
