@@ -1,10 +1,13 @@
 {
   "schema_version": 1,
   "gate": "m2-real-speech",
-  "state": "NOT_VERIFIED",
-  "verified_pass": false,
-  "description": "Status endpoint initialized. Waiting for next completed public-farm run; no model inference result asserted.",
-  "run_url": null,
-  "offline_model_manifest": "not_verified",
-  "real_onnx_cpu": "not_verified"
+  "run_id": 37775383565,
+  "run_attempt": "1",
+  "workflow": "AI Translator M2 Real Speech Models",
+  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37775383565",
+  "public_farm_commit": "15415e1ba7912a917bf2880154a492b8fc68e44c",
+  "finished_at": "2026-10-08T12:15:19.390Z",
+  "offline_model_manifest": "success",
+  "real_onnx_cpu": "cancelled",
+  "verified_pass": false
 }
