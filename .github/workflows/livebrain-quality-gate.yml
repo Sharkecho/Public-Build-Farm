@@ -73,6 +73,22 @@ jobs:
           set -euo pipefail
           test -n "$BUILD_FARM_SOURCE_TOKEN"
 
+      - name: Verify LiveBrain private-source read access
+        env:
+          BUILD_FARM_SOURCE_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HTTP_CODE="$(curl -sS -o /tmp/livebrain-repo.json -w '%{http_code}' \
+            -H "Authorization: Bearer $BUILD_FARM_SOURCE_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Sharkecho/LiveBrain-OS)"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::BUILD_FARM_SOURCE_TOKEN cannot read Sharkecho/LiveBrain-OS (HTTP $HTTP_CODE). Add LiveBrain-OS to the fine-grained PAT repository scope with Contents: Read-only."
+            exit 1
+          fi
+          echo "LIVEBRAIN_PRIVATE_SOURCE_ACCESS=PASS"
+
       - name: Checkout private LiveBrain source
         uses: actions/checkout@v4
         with:
@@ -107,7 +123,10 @@ jobs:
         shell: bash
         run: |
           set +e
-          python scripts/quality_gate.py             --gate "$QUALITY_GATE"             --report artifacts/quality-gate/report.json             > /tmp/livebrain-quality-gate.log 2>&1
+          python scripts/quality_gate.py \
+            --gate "$QUALITY_GATE" \
+            --report artifacts/quality-gate/report.json \
+            > /tmp/livebrain-quality-gate.log 2>&1
           CODE=$?
           set -e
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
@@ -131,17 +150,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -d source/.git ]; then
+          SOURCE_SHA="checkout-failed"
+          if [ -d source/.git ] && git -C source rev-parse --verify HEAD >/dev/null 2>&1; then
             SOURCE_SHA="$(git -C source rev-parse HEAD)"
-          else
-            SOURCE_SHA="checkout-failed"
           fi
+
           if [ -f source/artifacts/quality-gate/report.json ]; then
-            cd source
             python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
-          report = json.loads(Path("artifacts/quality-gate/report.json").read_text())
+          report = json.loads(Path("source/artifacts/quality-gate/report.json").read_text())
           print("## LiveBrain Production Quality Gate")
           print()
           print(f'- Gate: **{report["gate"]}**')
@@ -162,7 +180,9 @@ jobs:
               echo "## LiveBrain Production Quality Gate"
               echo
               echo "- Gate report was not produced."
+              echo "- Private source checkout or an earlier setup step failed."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
           echo "- Source SHA: `$SOURCE_SHA`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Private source and full evidence report were not uploaded." >> "$GITHUB_STEP_SUMMARY"
