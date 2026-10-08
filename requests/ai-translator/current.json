@@ -1,6 +1,6 @@
 {
-  "source_ref": "f6dd76f8c5e24e27c8f8c12e26f79337b9a79e53",
+  "source_ref": "m2/trustlyta-android-preview-20261008",
   "upload_apk": false,
-  "requested_by": "AI Translator M2 integration",
-  "reason": "Verify PR16 merged audio policy + platform model selectors and mobile regression/build on public runner"
+  "requested_by": "Trustlyta M2 Android verification",
+  "reason": "Build Flutter Trustlyta branding and run impacted widget/Android debug compile without server connectivity; do not publish private APK"
 }
