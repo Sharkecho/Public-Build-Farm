@@ -9,14 +9,19 @@ permissions:
   contents: read
 jobs:
   emulator-smoke:
+    outputs:
+      failure_stage: ${{ steps.diagnose.outputs.failure_stage }}
+      source_sha: ${{ steps.revision.outputs.sha }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - id: farm_checkout
+        uses: actions/checkout@v4
         with:
           path: farm
           persist-credentials: false
-      - name: Read pinned source revision
+      - id: revision
+        name: Read pinned source revision
         shell: bash
         run: |
           set -euo pipefail
@@ -24,7 +29,9 @@ jobs:
           test "${#ref}" -eq 40
           [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
           echo "SOURCE_SHA=$ref" >> "$GITHUB_ENV"
-      - name: Checkout private Trustlyta source
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+      - id: private_checkout
+        name: Checkout private Trustlyta source
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/ai-translator
@@ -32,23 +39,28 @@ jobs:
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           path: source
           persist-credentials: false
-      - uses: actions/setup-java@v4
+      - id: java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+      - id: flutter_setup
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Flutter static and widget regression
+      - id: widget_tests
+        name: Flutter static and widget regression
         working-directory: source/mobile
         run: |
           flutter pub get
           flutter analyze
           flutter test test/widget_test.dart test/floating_audio_orb_test.dart
-      - name: Build Android debug package
+      - id: apk_build
+        name: Build Android debug package
         working-directory: source/mobile
         run: flutter build apk --debug
-      - name: Start emulator, install, launch, and detect crashes
+      - id: emulator
+        name: Start emulator, install, launch, and detect crashes
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -73,3 +85,68 @@ jobs:
         run: |
           echo "Trustlyta Android emulator gate for source SHA ${SOURCE_SHA}." >> "$GITHUB_STEP_SUMMARY"
           echo "No APK or private screenshots are published." >> "$GITHUB_STEP_SUMMARY"
+
+      - id: diagnose
+        name: Record sanitized failure stage
+        if: ${{ always() }}
+        shell: bash
+        env:
+          FARM: ${{ steps.farm_checkout.outcome }}
+          REVISION: ${{ steps.revision.outcome }}
+          PRIVATE: ${{ steps.private_checkout.outcome }}
+          JAVA: ${{ steps.java.outcome }}
+          FLUTTER: ${{ steps.flutter_setup.outcome }}
+          WIDGET: ${{ steps.widget_tests.outcome }}
+          BUILD: ${{ steps.apk_build.outcome }}
+          EMULATOR: ${{ steps.emulator.outcome }}
+        run: |
+          stage=none
+          for item in "farm_checkout:$FARM" "source_ref:$REVISION" "private_checkout:$PRIVATE" "java_setup:$JAVA" "flutter_setup:$FLUTTER" "flutter_tests:$WIDGET" "apk_build:$BUILD" "emulator:$EMULATOR"; do
+            key="${item%%:*}"
+            outcome="${item#*:}"
+            if [ "$outcome" = failure ] || [ "$outcome" = cancelled ]; then
+              stage="$key"
+              break
+            fi
+          done
+          echo "failure_stage=$stage" >> "$GITHUB_OUTPUT"
+          echo "Failure stage (sanitized): $stage" >> "$GITHUB_STEP_SUMMARY"
+
+  publish-status:
+    needs: [emulator-smoke]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish readable, non-sensitive gate record
+        uses: actions/github-script@v7
+        env:
+          GATE_RESULT: ${{ needs.emulator-smoke.result }}
+          FAILURE_STAGE: ${{ needs.emulator-smoke.outputs.failure_stage }}
+          SOURCE_SHA: ${{ needs.emulator-smoke.outputs.source_sha }}
+        with:
+          script: |
+            const owner=context.repo.owner,repo=context.repo.repo;
+            const path='status/ai-translator/android-emulator.json';
+            const result=process.env.GATE_RESULT;
+            const allowed=new Set(['none','farm_checkout','source_ref','private_checkout','java_setup','flutter_setup','flutter_tests','apk_build','emulator']);
+            const stage=allowed.has(process.env.FAILURE_STAGE)?process.env.FAILURE_STAGE:'runner_or_setup';
+            const source=(process.env.SOURCE_SHA||'').match(/^[0-9a-f]{40}$/)?.[0]||null;
+            const report={
+              schema_version:1, gate:'trustlyta-android-emulator',
+              run_id:context.runId,
+              run_url:`https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+              source_sha:source,
+              result, failure_stage:result==='success'?'none':stage,
+              verified_pass:result==='success',
+              finished_at:new Date().toISOString()
+            };
+            let sha;
+            try{sha=(await github.rest.repos.getContent({owner,repo,path})).data.sha;}
+            catch(e){if(e.status!==404)throw e;}
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,repo,path,sha,
+              message:`gate(emulator): publish run ${context.runId}`,
+              content:Buffer.from(JSON.stringify(report,null,2)+'\n').toString('base64')
+            });
