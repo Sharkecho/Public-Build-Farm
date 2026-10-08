@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "gate": "m2-real-speech",
-  "run_id": 37775458486,
+  "run_id": 37777704550,
   "run_attempt": "1",
   "workflow": "AI Translator M2 Real Speech Models",
-  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37775458486",
-  "public_farm_commit": "2547c1a743282a3b95ed98e04adab17527402bfd",
-  "finished_at": "2026-10-08T12:16:50.931Z",
+  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37777704550",
+  "public_farm_commit": "096e0ffad06079823c117ba00de1906710acff50",
+  "finished_at": "2026-10-08T12:34:54.105Z",
   "offline_model_manifest": "success",
-  "real_onnx_cpu": "success",
-  "verified_pass": true
+  "real_onnx_cpu": "cancelled",
+  "verified_pass": false
 }
