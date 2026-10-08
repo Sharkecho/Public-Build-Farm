@@ -1,6 +1,7 @@
 {
-  "source_ref": "m2/real-vad-streaming-asr-assets-20261008",
+  "source_ref": "bb750abe287e68f7e8449a438630f58418e9bcb3",
   "upload_model_artifacts": false,
   "requested_by": "AI Translator M2",
-  "reason": "Public Build Farm validation for Silero VAD and Zipformer real ONNX CPU inference"
+  "reason": "M2 Gate retry: pin immutable source SHA and execute isolated manifest then real ONNX inference",
+  "gate_version": "m2-real-speech-v1"
 }
