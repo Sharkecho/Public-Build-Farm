@@ -128,12 +128,16 @@ jobs:
 
       - name: Record sanitized public evidence
         if: always()
-        working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          SOURCE_SHA="$(git rev-parse HEAD)"
-          if [ -f artifacts/quality-gate/report.json ]; then
+          if [ -d source/.git ]; then
+            SOURCE_SHA="$(git -C source rev-parse HEAD)"
+          else
+            SOURCE_SHA="checkout-failed"
+          fi
+          if [ -f source/artifacts/quality-gate/report.json ]; then
+            cd source
             python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
