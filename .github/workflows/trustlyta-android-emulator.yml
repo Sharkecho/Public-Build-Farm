@@ -89,7 +89,7 @@ jobs:
           emulator-boot-timeout: 900
           disable-spellchecker: true
           script: |
-            set -euo pipefail
+            set -eu
             adb install -r source/mobile/build/app/outputs/flutter-apk/app-debug.apk
             adb shell am start -n com.sharkecho.ai_translator/.MainActivity
             sleep 15
