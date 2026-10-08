@@ -102,3 +102,54 @@ jobs:
         if: always()
         run: |
           echo 'M2 real speech verification: see step results.' >> "$GITHUB_STEP_SUMMARY"
+
+  gate-status:
+    name: Publish safe M2 gate status
+    needs: [offline-model-manifest, real-onnx-cpu]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - name: Update public status pointer (no private output or logs)
+        uses: actions/github-script@v7
+        env:
+          MANIFEST_RESULT: ${{ needs.offline-model-manifest.result }}
+          INFERENCE_RESULT: ${{ needs.real-onnx-cpu.result }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const path = 'status/ai-translator/m2-speech.json';
+            const manifest = process.env.MANIFEST_RESULT;
+            const inference = process.env.INFERENCE_RESULT;
+            const allPass = manifest === 'success' && inference === 'success';
+            const report = {
+              schema_version: 1,
+              gate: 'm2-real-speech',
+              run_id: context.runId,
+              run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+              workflow: context.workflow,
+              run_url: `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+              public_farm_commit: context.sha,
+              finished_at: new Date().toISOString(),
+              offline_model_manifest: manifest,
+              real_onnx_cpu: inference,
+              verified_pass: allPass
+            };
+            let sha;
+            try {
+              const old = await github.rest.repos.getContent({owner, repo, path});
+              sha = old.data.sha;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner, repo, path, sha,
+              message: `gate(m2): publish public real-speech result for run ${context.runId}`,
+              content: Buffer.from(JSON.stringify(report, null, 2) + '\n').toString('base64')
+            });
+            core.summary.addHeading('M2 gate visibility')
+              .addRaw(`Public status: ${path}. Manifest=${manifest}, real ONNX=${inference}`)
+              .write();
