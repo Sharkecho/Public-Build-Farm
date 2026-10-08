@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "gate": "trustlyta-flutter-fast",
+  "run_id": 37819051360,
+  "source_sha": null,
+  "result": "failure",
+  "failed_step": "revision",
+  "verified_pass": false,
+  "finished_at": "2026-10-08T17:45:51.055Z"
+}
