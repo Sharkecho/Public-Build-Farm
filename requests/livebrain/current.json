@@ -1,6 +1,7 @@
 {
   "source_ref": "0790028a8dcb6ad077f254418d5ff63a08dd6958",
   "quality_gate": "G4",
-  "requested_by": "LiveBrain Production Quality Gate V1",
-  "reason": "Run LiveBrain validation on the public GitHub-hosted build farm instead of the blocked private-repository runner."
+  "requested_by": "LiveBrain G4 retry after public-runner access preflight hardening",
+  "reason": "Re-run LiveBrain G4 on Public-Build-Farm and verify fine-grained PAT repository scope.",
+  "retry_seq": 1
 }
