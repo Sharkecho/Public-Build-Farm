@@ -48,15 +48,24 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - id: widget_tests
-        name: Flutter static and widget regression
+      - id: flutter_deps
+        name: Flutter dependencies
         working-directory: source/mobile
-        run: |
-          flutter pub get
-          flutter analyze
-          flutter test test/widget_test.dart test/floating_audio_orb_test.dart
+        timeout-minutes: 8
+        run: flutter pub get
+      - id: flutter_analyze
+        name: Flutter static analysis
+        working-directory: source/mobile
+        timeout-minutes: 8
+        run: flutter analyze
+      - id: widget_tests
+        name: Flutter widget regressions
+        working-directory: source/mobile
+        timeout-minutes: 8
+        run: flutter test test/widget_test.dart test/floating_audio_orb_test.dart
       - id: apk_build
         name: Build Android debug package
+        timeout-minutes: 15
         working-directory: source/mobile
         run: flutter build apk --debug
       - id: emulator
@@ -98,12 +107,14 @@ jobs:
           PRIVATE: ${{ steps.private_checkout.outcome }}
           JAVA: ${{ steps.java.outcome }}
           FLUTTER: ${{ steps.flutter_setup.outcome }}
+          DEPS: ${{ steps.flutter_deps.outcome }}
+          ANALYZE: ${{ steps.flutter_analyze.outcome }}
           WIDGET: ${{ steps.widget_tests.outcome }}
           BUILD: ${{ steps.apk_build.outcome }}
           EMULATOR: ${{ steps.emulator.outcome }}
         run: |
           stage=none
-          for item in "farm_checkout:$FARM" "source_ref:$REVISION" "private_checkout:$PRIVATE" "java_setup:$JAVA" "flutter_setup:$FLUTTER" "flutter_tests:$WIDGET" "apk_build:$BUILD" "emulator:$EMULATOR"; do
+          for item in "farm_checkout:$FARM" "source_ref:$REVISION" "private_checkout:$PRIVATE" "java_setup:$JAVA" "flutter_setup:$FLUTTER" "flutter_dependencies:$DEPS" "flutter_analyze:$ANALYZE" "flutter_tests:$WIDGET" "apk_build:$BUILD" "emulator:$EMULATOR"; do
             key="${item%%:*}"
             outcome="${item#*:}"
             if [ "$outcome" = failure ] || [ "$outcome" = cancelled ]; then
@@ -132,7 +143,7 @@ jobs:
             const owner=context.repo.owner,repo=context.repo.repo;
             const path='status/ai-translator/android-emulator.json';
             const result=process.env.GATE_RESULT;
-            const allowed=new Set(['none','farm_checkout','source_ref','private_checkout','java_setup','flutter_setup','flutter_tests','apk_build','emulator']);
+            const allowed=new Set(['none','farm_checkout','source_ref','private_checkout','java_setup','flutter_setup','flutter_dependencies','flutter_analyze','flutter_tests','apk_build','emulator']);
             const stage=allowed.has(process.env.FAILURE_STAGE)?process.env.FAILURE_STAGE:'runner_or_setup';
             const source=(process.env.SOURCE_SHA||'').match(/^[0-9a-f]{40}$/)?.[0]||null;
             const report={
@@ -147,6 +158,10 @@ jobs:
             let sha;
             try{sha=(await github.rest.repos.getContent({owner,repo,path})).data.sha;}
             catch(e){if(e.status!==404)throw e;}
+            if (sha) {
+              const old=JSON.parse(Buffer.from((await github.rest.repos.getContent({owner,repo,path})).data.content,'base64').toString());
+              if (Number(old.run_id)>context.runId) { core.info('Newer run already reported; retaining latest.'); return; }
+            }
             await github.rest.repos.createOrUpdateFileContents({
               owner,repo,path,sha,
               message:`gate(emulator): publish run ${context.runId}`,
