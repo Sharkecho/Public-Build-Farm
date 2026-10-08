@@ -1,6 +1,6 @@
 {
-  "source_ref": "f1a6aab4168503acc54b656328683b1bce57d4cc",
+  "source_ref": "7ccbb95e1caa99d2195a45eca7a2e24eea8b1923",
   "upload_apk": false,
   "requested_by": "Trustlyta M2 Android verification",
-  "reason": "Trustlyta Android gate rerun after status reporting enabled; pin f1a6aab4168503acc54b656328683b1bce57d4cc"
+  "reason": "Trustlyta M2 integrated voice orb UI Flutter widget tests and Android debug compile; no production endpoint"
 }
