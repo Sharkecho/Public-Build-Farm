@@ -1,0 +1,47 @@
+name: CodingOS Public-Safe CI Probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/codingos-public-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  codingos-public-ci:
+    name: CodingOS public-safe runner
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout public farm only
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify public runner and toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CODINGOS_PUBLIC_RUNNER=STARTED"
+          node --version
+          python3 --version
+          git --version
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = {
+              "project": "CodingOS",
+              "source": "public-safe-synthetic-only",
+              "runner": "ubuntu-22.04",
+              "passed": True,
+          }
+          Path("codingos-public-probe.json").write_text(json.dumps(result))
+          print("CODINGOS_PUBLIC_RUNNER=PASS")
+          PY
+      - name: Upload non-secret probe evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: codingos-public-probe
+          path: codingos-public-probe.json
+          retention-days: 7
