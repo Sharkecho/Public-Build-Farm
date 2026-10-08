@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "gate": "trustlyta-android-emulator",
+  "run_id": 37807087247,
+  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37807087247",
+  "source_sha": "7ccbb95e1caa99d2195a45eca7a2e24eea8b1923",
+  "result": "failure",
+  "failure_stage": "flutter_tests",
+  "verified_pass": false,
+  "finished_at": "2026-10-08T16:14:55.117Z"
+}
