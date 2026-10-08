@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "gate": "trustlyta-android-emulator",
-  "run_id": 37807087247,
-  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37807087247",
-  "source_sha": "7ccbb95e1caa99d2195a45eca7a2e24eea8b1923",
+  "run_id": 37815408196,
+  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37815408196",
+  "source_sha": "fd3b2c25ced15c35da0dee8d4136c0290e33d009",
   "result": "failure",
-  "failure_stage": "flutter_tests",
+  "failure_stage": "emulator",
   "verified_pass": false,
-  "finished_at": "2026-10-08T16:14:55.117Z"
+  "finished_at": "2026-10-08T17:42:05.920Z"
 }
