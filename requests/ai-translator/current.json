@@ -1,6 +1,6 @@
 {
-  "source_ref": "m2/trustlyta-android-preview-20261008",
+  "source_ref": "954daded2f1c21a79a05c48730b8623159b2e664",
   "upload_apk": false,
   "requested_by": "Trustlyta M2 Android verification",
-  "reason": "Build Flutter Trustlyta branding and run impacted widget/Android debug compile without server connectivity; do not publish private APK"
+  "reason": "Trustlyta client widget + overlay orb focused tests, Flutter analyze/full tests, Android debug compile; SG server independent"
 }
