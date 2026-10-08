@@ -1,0 +1,75 @@
+name: Trustlyta Android Emulator Smoke
+on:
+  push:
+    paths:
+      - 'requests/ai-translator/emulator.json'
+      - '.github/workflows/trustlyta-android-emulator.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  emulator-smoke:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: farm
+          persist-credentials: false
+      - name: Read pinned source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(python3 -c 'import json; print(json.load(open("farm/requests/ai-translator/emulator.json"))["source_sha"])')"
+          test "${#ref}" -eq 40
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
+          echo "SOURCE_SHA=$ref" >> "$GITHUB_ENV"
+      - name: Checkout private Trustlyta source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/ai-translator
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Flutter static and widget regression
+        working-directory: source/mobile
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test test/widget_test.dart test/floating_audio_orb_test.dart
+      - name: Build Android debug package
+        working-directory: source/mobile
+        run: flutter build apk --debug
+      - name: Start emulator, install, launch, and detect crashes
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            adb install -r source/mobile/build/app/outputs/flutter-apk/app-debug.apk
+            adb shell am start -n com.sharkecho.ai_translator/.MainActivity
+            sleep 15
+            adb shell pidof com.sharkecho.ai_translator >/dev/null
+            adb shell dumpsys activity activities | grep -q 'com.sharkecho.ai_translator'
+            if adb logcat -d -b crash | grep -E 'FATAL EXCEPTION|Fatal signal'; then
+              echo 'EMULATOR_CRASH=FAIL'
+              exit 1
+            fi
+            echo 'EMULATOR_INSTALL_LAUNCH_SMOKE=PASS'
+      - name: Public-safe summary
+        if: always()
+        run: |
+          echo "Trustlyta Android emulator gate for source SHA ${SOURCE_SHA}." >> "$GITHUB_STEP_SUMMARY"
+          echo "No APK or private screenshots are published." >> "$GITHUB_STEP_SUMMARY"
