@@ -1,0 +1,168 @@
+name: LiveBrain Production Quality Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private LiveBrain-OS branch/tag/SHA to validate"
+        required: true
+        default: "main"
+        type: string
+      quality_gate:
+        description: "Production Quality Gate"
+        required: true
+        default: "G4"
+        type: choice
+        options: [G1, G2, G3, G4]
+  repository_dispatch:
+    types: [livebrain-quality-gate]
+  push:
+    paths:
+      - "requests/livebrain/current.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livebrain-quality-gate
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout build request
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          path: build-farm
+          fetch-depth: 1
+
+      - name: Resolve LiveBrain source and gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+          INPUT_QUALITY_GATE: ${{ inputs.quality_gate }}
+          DISPATCH_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
+          DISPATCH_QUALITY_GATE: ${{ github.event.client_payload.quality_gate }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            SOURCE_REF="$(python3 -c 'import json; p=json.load(open("build-farm/requests/livebrain/current.json")); print(p["source_ref"])')"
+            QUALITY_GATE="$(python3 -c 'import json; p=json.load(open("build-farm/requests/livebrain/current.json")); print(p.get("quality_gate","G4"))')"
+          elif [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            SOURCE_REF="$DISPATCH_SOURCE_REF"
+            QUALITY_GATE="${DISPATCH_QUALITY_GATE:-G4}"
+          else
+            SOURCE_REF="${INPUT_SOURCE_REF:-main}"
+            QUALITY_GATE="${INPUT_QUALITY_GATE:-G4}"
+          fi
+          test -n "$SOURCE_REF"
+          case "$QUALITY_GATE" in G1|G2|G3|G4) ;; *) echo "invalid gate"; exit 2 ;; esac
+          echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
+          echo "QUALITY_GATE=$QUALITY_GATE" >> "$GITHUB_ENV"
+
+      - name: Validate private source token
+        env:
+          BUILD_FARM_SOURCE_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_FARM_SOURCE_TOKEN"
+
+      - name: Checkout private LiveBrain source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/LiveBrain-OS
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install LiveBrain backend
+        working-directory: source
+        run: pip install -e ".[dev]"
+
+      - name: Install LiveBrain web
+        working-directory: source/apps/web
+        run: npm install
+
+      - name: Run Production Quality Gate
+        id: gate
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          python scripts/quality_gate.py             --gate "$QUALITY_GATE"             --report artifacts/quality-gate/report.json             > /tmp/livebrain-quality-gate.log 2>&1
+          CODE=$?
+          set -e
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/quality-gate/report.json").read_text())
+          print("LIVEBRAIN_GATE=" + report["gate"])
+          print("LIVEBRAIN_STATUS=" + report["status"])
+          for item in report["results"]:
+              print(f'{item["name"]}: {"PASS" if item["passed"] else "FAIL"} ({item["duration_s"]}s)')
+          if report["blockers"]:
+              print("BLOCKERS=" + ",".join(report["blockers"]))
+          PY
+
+          exit "$CODE"
+
+      - name: Record sanitized public evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d source/.git ]; then
+            SOURCE_SHA="$(git -C source rev-parse HEAD)"
+          else
+            SOURCE_SHA="checkout-failed"
+          fi
+          if [ -f source/artifacts/quality-gate/report.json ]; then
+            cd source
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/quality-gate/report.json").read_text())
+          print("## LiveBrain Production Quality Gate")
+          print()
+          print(f'- Gate: **{report["gate"]}**')
+          print(f'- Result: **{report["status"]}**')
+          print(f'- Risk: **{report["risk"]}**')
+          print()
+          print("| Check | Result | Duration |")
+          print("| --- | --- | ---: |")
+          for item in report["results"]:
+              result = "PASS" if item["passed"] else "FAIL"
+              print(f'| {item["name"]} | {result} | {item["duration_s"]}s |')
+          if report["blockers"]:
+              print()
+              print("- Blockers: " + ", ".join(report["blockers"]))
+          PY
+          else
+            {
+              echo "## LiveBrain Production Quality Gate"
+              echo
+              echo "- Gate report was not produced."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- Source SHA: `$SOURCE_SHA`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Private source and full evidence report were not uploaded." >> "$GITHUB_STEP_SUMMARY"

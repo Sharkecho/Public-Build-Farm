@@ -13,6 +13,7 @@ Product/source repositories remain PRIVATE.
 | `Sharkecho/note9-liveos` | Samsung Note9 kernel | `ubuntu-22.04` |
 | `Sharkecho/ai-translator` | Flutter/Android APK validation build | `ubuntu-latest` | deployed · awaiting first real run |
 | `Sharkecho/CentoreOS` | Tauri/Rust Windows desktop build | `windows-latest` | deployed · awaiting first real run |
+| `Sharkecho/LiveBrain-OS` | Production Quality Gate G1–G4 | `ubuntu-22.04` | deployed · source token scope required |
 
 ## Security boundary
 
@@ -31,7 +32,7 @@ Product/source repositories remain PRIVATE.
 
 Recommended `BUILD_FARM_SOURCE_TOKEN`:
 
-- Repository access: only `MT3000`, `note9-liveos`, `ai-translator`, `CentoreOS`.
+- Repository access: only `MT3000`, `note9-liveos`, `ai-translator`, `CentoreOS`, `LiveBrain-OS`.
 - **Contents: Read-only**.
 - No write permissions.
 - Note9 baseline→UAC2 artifact reads use this PUBLIC repository's built-in `GITHUB_TOKEN`, not the private-source token.

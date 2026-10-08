@@ -14,6 +14,7 @@ Recommended configuration:
   - `note9-liveos`
   - `ai-translator`
   - `CentoreOS`
+  - `LiveBrain-OS`
 - Repository permissions:
   - **Contents: Read-only**
   - everything else: No access / default
@@ -39,7 +40,8 @@ Run only one small/fast public build first:
 1. `AI Translator Android Build (public build farm)`, source_ref=`main`, publish_apk=false.
 2. After PASS, run `CentoreOS Desktop Build`, publish_binary=false.
 3. Then run Note9 baseline when needed.
-4. Run MT3000 LiveOS base last because it is the longest build.
+4. Run LiveBrain Production Quality Gate, source_ref=`main`, quality_gate=`G4`.
+5. Run MT3000 LiveOS base last because it is the longest build.
 
 Do not enable automatic push/PR triggers after verification.
 
