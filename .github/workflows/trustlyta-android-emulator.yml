@@ -68,6 +68,15 @@ jobs:
         timeout-minutes: 15
         working-directory: source/mobile
         run: flutter build apk --debug
+      - id: kvm
+        name: Grant ephemeral Runner access to KVM
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm || { echo "KVM_DEVICE_UNAVAILABLE"; exit 1; }
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          echo "KVM_ACCESS=PASS"
       - id: emulator
         name: Start emulator, install, launch, and detect crashes
         uses: reactivecircus/android-emulator-runner@v2
@@ -111,10 +120,11 @@ jobs:
           ANALYZE: ${{ steps.flutter_analyze.outcome }}
           WIDGET: ${{ steps.widget_tests.outcome }}
           BUILD: ${{ steps.apk_build.outcome }}
+          KVM: ${{ steps.kvm.outcome }}
           EMULATOR: ${{ steps.emulator.outcome }}
         run: |
           stage=none
-          for item in "farm_checkout:$FARM" "source_ref:$REVISION" "private_checkout:$PRIVATE" "java_setup:$JAVA" "flutter_setup:$FLUTTER" "flutter_dependencies:$DEPS" "flutter_analyze:$ANALYZE" "flutter_tests:$WIDGET" "apk_build:$BUILD" "emulator:$EMULATOR"; do
+          for item in "farm_checkout:$FARM" "source_ref:$REVISION" "private_checkout:$PRIVATE" "java_setup:$JAVA" "flutter_setup:$FLUTTER" "flutter_dependencies:$DEPS" "flutter_analyze:$ANALYZE" "flutter_tests:$WIDGET" "apk_build:$BUILD" "kvm_access:$KVM" "emulator:$EMULATOR"; do
             key="${item%%:*}"
             outcome="${item#*:}"
             if [ "$outcome" = failure ] || [ "$outcome" = cancelled ]; then
@@ -143,7 +153,7 @@ jobs:
             const owner=context.repo.owner,repo=context.repo.repo;
             const path='status/ai-translator/android-emulator.json';
             const result=process.env.GATE_RESULT;
-            const allowed=new Set(['none','farm_checkout','source_ref','private_checkout','java_setup','flutter_setup','flutter_dependencies','flutter_analyze','flutter_tests','apk_build','emulator']);
+            const allowed=new Set(['none','farm_checkout','source_ref','private_checkout','java_setup','flutter_setup','flutter_dependencies','flutter_analyze','flutter_tests','apk_build','kvm_access','emulator']);
             const stage=allowed.has(process.env.FAILURE_STAGE)?process.env.FAILURE_STAGE:'runner_or_setup';
             const source=(process.env.SOURCE_SHA||'').match(/^[0-9a-f]{40}$/)?.[0]||null;
             const report={
