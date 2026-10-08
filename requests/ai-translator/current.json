@@ -1,6 +1,6 @@
 {
-  "source_ref": "78b76f1b9eb8d7a1d968f3ed16abe47e30443ce1",
+  "source_ref": "0fb689393127bd4d477cf55d7e8d26c80644116d",
   "upload_apk": false,
   "requested_by": "Engineering-Control",
-  "reason": "AI Translator M2 Device Intelligence Android native compile gate"
+  "reason": "AI Translator PR14 parallel validation via Public Build Farm"
 }
