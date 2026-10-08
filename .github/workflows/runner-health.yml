@@ -1,0 +1,27 @@
+name: Public Farm Runner Health
+on:
+  push:
+    paths:
+      - '.github/workflows/runner-health.yml'
+      - 'requests/runner-health.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runner-health:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    steps:
+      - name: Run isolated zero-dependency probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'PUBLIC_STANDARD_RUNNER=STARTED'
+          python3 -c 'import sys; assert sys.version_info.major == 3'
+          test -n "${RUNNER_OS:-}"
+          echo 'PUBLIC_STANDARD_RUNNER=PASS'
+          {
+            echo '### Runner health'
+            echo '- Standard public GitHub-hosted runner started and executed Python successfully.'
+            echo '- No private source or secrets accessed.'
+          } >> "$GITHUB_STEP_SUMMARY"
