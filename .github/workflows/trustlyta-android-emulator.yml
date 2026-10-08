@@ -68,6 +68,8 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
+          emulator-boot-timeout: 900
+          disable-spellchecker: true
           script: |
             set -euo pipefail
             adb install -r source/mobile/build/app/outputs/flutter-apk/app-debug.apk
