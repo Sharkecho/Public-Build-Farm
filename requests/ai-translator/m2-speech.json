@@ -2,6 +2,6 @@
   "source_ref": "m2/real-vad-streaming-asr-assets-20261008",
   "upload_model_artifacts": false,
   "requested_by": "AI Translator M2",
-  "reason": "M2 rerun corrected latest branch for real Silero and Zipformer smoke test (pin resolved checkout SHA in workflow evidence)",
-  "gate_version": "m2-real-speech-v2"
+  "reason": "Verify status/ai-translator/m2-speech.json publication and current real ONNX M2 gate",
+  "gate_version": "m2-real-speech-visibility-v3"
 }
