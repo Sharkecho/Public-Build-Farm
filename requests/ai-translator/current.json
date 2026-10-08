@@ -1,6 +1,6 @@
 {
-  "source_ref": "3c762fa88947134cac70c600f5f0ed8f4cae527c",
+  "source_ref": "408beebc3d7deceb266046e29c9646a349a8dc88",
   "upload_apk": false,
   "requested_by": "Engineering-Control",
-  "reason": "AI Translator PR13 parallel validation via Public Build Farm"
+  "reason": "AI Translator PR13 audio front-end revalidation after analyzer fix"
 }
