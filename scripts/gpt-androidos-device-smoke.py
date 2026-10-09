@@ -65,9 +65,44 @@ def getprop(adb: str, serial: str, name: str) -> str:
     return adb_run(adb, ["shell", "getprop", name], serial)
 
 
+def capture_ui_evidence(adb: str, serial: str, output_dir: Path) -> dict:
+    """Explicit local-only screenshot and UIAutomator hierarchy. No uploads."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        p = subprocess.run([adb, "-s", serial, "exec-out", "screencap", "-p"],
+                           capture_output=True, check=False, timeout=40)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise DeviceError("Screenshot ADB command failed") from exc
+    if p.returncode or not p.stdout.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        raise DeviceError("Screenshot failed or is not PNG")
+    image = output_dir / "agent-screen.png"
+    image.write_bytes(p.stdout)
+
+    remote = "/sdcard/Download/gpt_androidos_ui_capture.xml"
+    xml_path = output_dir / "agent-ui.xml"
+    try:
+        adb_run(adb, ["shell", "uiautomator", "dump", remote], serial, timeout=60)
+        xml = adb_run(adb, ["exec-out", "cat", remote], serial, timeout=20)
+        if not xml.lstrip().startswith("<?xml") and "<hierarchy" not in xml:
+            raise DeviceError("UIAutomator hierarchy was not returned")
+        xml_path.write_text(xml, encoding="utf-8")
+    finally:
+        try:
+            adb_run(adb, ["shell", "rm", "-f", remote], serial, timeout=15)
+        except DeviceError:
+            pass
+    return {
+        "screenshot_path": str(image.resolve()),
+        "screenshot_sha256": hash_file(image),
+        "ui_xml_path": str(xml_path.resolve()),
+        "ui_xml_sha256": hash_file(xml_path),
+        "evidence_local_only": True,
+    }
+
+
 def smoke(adb: str, serial: str | None = None, apk: Path | None = None,
           expected_sha256: str | None = None, install: bool = False,
-          launch_agent: bool = False) -> dict:
+          launch_agent: bool = False, capture_ui: Path | None = None) -> dict:
     device = choose_serial(adb, serial)
     model = getprop(adb, device, "ro.product.model")
     sdk = getprop(adb, device, "ro.build.version.sdk")
@@ -101,7 +136,9 @@ def smoke(adb: str, serial: str | None = None, apk: Path | None = None,
             raise DeviceError("Agent launch could not be confirmed")
         launched = True
 
+    capture = capture_ui_evidence(adb, device, capture_ui) if capture_ui is not None else None
     return {
+        "ui_capture": capture,
         "schema_version": 1, "utc": datetime.now(timezone.utc).isoformat(),
         "device_model": model, "android_sdk": sdk, "boot_completed": boot == "1",
         "agent_package": AGENT_PKG, "agent_installed": agent_present,
@@ -122,10 +159,11 @@ def main() -> int:
     parser.add_argument("--install", action="store_true", help="explicitly opt in to updating the Agent APK")
     parser.add_argument("--launch-agent", action="store_true", help="explicitly opt in to launching the Agent")
     parser.add_argument("--report", type=Path, help="optional local-only, sanitized JSON report")
+    parser.add_argument("--capture-ui", type=Path, help="explicitly save PNG screenshot and UI hierarchy only to local PC")
     args = parser.parse_args()
     try:
         report = smoke(args.adb, args.serial, args.apk, args.expected_sha256,
-                       args.install, args.launch_agent)
+                       args.install, args.launch_agent, args.capture_ui)
         payload = json.dumps(report, ensure_ascii=False, indent=2)
         print(payload)
         if args.report:
