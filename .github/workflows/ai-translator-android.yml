@@ -13,6 +13,11 @@ on:
         required: true
         default: false
         type: boolean
+      build_only:
+        description: "Run static analysis and the Android debug APK build without the full Flutter suite"
+        required: true
+        default: false
+        type: boolean
   repository_dispatch:
     types: [ai-translator-android]
   push:
@@ -99,6 +104,7 @@ jobs:
         run: flutter analyze
 
       - name: Run Flutter tests
+        if: github.event_name != 'workflow_dispatch' || inputs.build_only != true
         working-directory: source/mobile
         run: flutter test
 
@@ -121,7 +127,11 @@ jobs:
             echo "- Source ref: `$SOURCE_REF`"
             echo "- Source SHA: `$SOURCE_SHA`"
             echo "- Flutter analyze: PASS"
-            echo "- Flutter tests: PASS"
+            if [ "${{ inputs.build_only }}" = "true" ]; then
+              echo "- Flutter tests: NOT_RUN (explicit build-only request)"
+            else
+              echo "- Flutter tests: PASS"
+            fi
             echo "- Android debug build: PASS"
             echo "- APK uploaded: $UPLOAD_APK"
           } >> "$GITHUB_STEP_SUMMARY"
