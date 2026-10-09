@@ -66,16 +66,34 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK 36 using preinstalled runner tools
+      - name: Prepare Android SDK 36 with explicit SDK root
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${ANDROID_HOME:-}"
-          command -v sdkmanager
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
-          test -d "$ANDROID_HOME/platforms/android-36"
-          test -d "$ANDROID_HOME/build-tools/36.0.0"
+          # Some public runners no longer export ANDROID_HOME or have sdkmanager on PATH.
+          sdkroot="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          mkdir -p "$sdkroot"
+          echo "ANDROID_HOME=$sdkroot" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdkroot" >> "$GITHUB_ENV"
+          manager=""
+          if command -v sdkmanager >/dev/null 2>&1; then
+            manager="$(command -v sdkmanager)"
+          elif [ -d "$sdkroot/cmdline-tools" ]; then
+            manager="$(find "$sdkroot/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          if [ -z "$manager" ]; then
+            mkdir -p "$sdkroot/cmdline-tools"
+            curl -fsSL --retry 3 --connect-timeout 20 -o "$RUNNER_TEMP/android-cmdline.zip"               "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q "$RUNNER_TEMP/android-cmdline.zip" -d "$RUNNER_TEMP"
+            mv "$RUNNER_TEMP/cmdline-tools" "$sdkroot/cmdline-tools/latest"
+            manager="$sdkroot/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "Using sdkmanager at: $manager"
+          yes | "$manager" --sdk_root="$sdkroot" --licenses >/dev/null || test "${PIPESTATUS[1]}" -eq 0
+          "$manager" --sdk_root="$sdkroot" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          test -d "$sdkroot/platforms/android-36"
+          test -d "$sdkroot/build-tools/36.0.0"
+          echo "ANDROID_SDK_PREPARED=YES"
 
       - name: Cache Gradle dependencies
         uses: gradle/actions/setup-gradle@v4
