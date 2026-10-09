@@ -23,6 +23,11 @@ on:
         required: true
         default: false
         type: boolean
+      encrypted_delivery:
+        description: "Upload only an encrypted review APK for private repository intake"
+        required: true
+        default: false
+        type: boolean
   repository_dispatch:
     types: [ai-translator-android]
   push:
@@ -45,7 +50,7 @@ jobs:
 
     steps:
       - name: Checkout build request
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.encrypted_delivery == true
         uses: actions/checkout@v4
         with:
           path: build-farm
@@ -59,6 +64,7 @@ jobs:
           INPUT_UPLOAD_APK: ${{ inputs.upload_apk }}
           INPUT_BUILD_ONLY: ${{ inputs.build_only }}
           INPUT_TEST_ONLY: ${{ inputs.test_only }}
+          INPUT_ENCRYPTED_DELIVERY: ${{ inputs.encrypted_delivery }}
           DISPATCH_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
           DISPATCH_UPLOAD_APK: ${{ github.event.client_payload.upload_apk }}
         run: |
@@ -68,22 +74,30 @@ jobs:
             UPLOAD_APK="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("upload_apk", False))).lower())')"
             BUILD_ONLY="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("build_only", False))).lower())')"
             TEST_ONLY="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("test_only", False))).lower())')"
+            ENCRYPTED_DELIVERY="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("encrypted_delivery", False))).lower())')"
           elif [ "$EVENT_NAME" = "repository_dispatch" ]; then
             SOURCE_REF="$DISPATCH_SOURCE_REF"
             UPLOAD_APK="${DISPATCH_UPLOAD_APK:-false}"
             BUILD_ONLY=false
             TEST_ONLY=false
+            ENCRYPTED_DELIVERY=false
           else
             SOURCE_REF="${INPUT_SOURCE_REF:-main}"
             UPLOAD_APK="${INPUT_UPLOAD_APK:-false}"
             BUILD_ONLY="${INPUT_BUILD_ONLY:-false}"
             TEST_ONLY="${INPUT_TEST_ONLY:-false}"
+            ENCRYPTED_DELIVERY="${INPUT_ENCRYPTED_DELIVERY:-false}"
           fi
           test -n "$SOURCE_REF"
+          if [ "$ENCRYPTED_DELIVERY" = true ] && [ "$UPLOAD_APK" = true ]; then
+            echo 'Plaintext and encrypted APK uploads cannot be combined' >&2
+            exit 1
+          fi
           echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
           echo "UPLOAD_APK=$UPLOAD_APK" >> "$GITHUB_ENV"
           echo "BUILD_ONLY=$BUILD_ONLY" >> "$GITHUB_ENV"
           echo "TEST_ONLY=$TEST_ONLY" >> "$GITHUB_ENV"
+          echo "ENCRYPTED_DELIVERY=$ENCRYPTED_DELIVERY" >> "$GITHUB_ENV"
           echo "test_only=$TEST_ONLY" >> "$GITHUB_OUTPUT"
 
       - name: Validate private source token is configured
@@ -163,8 +177,35 @@ jobs:
               echo "- Flutter tests: PASS"
             fi
             echo "- Android debug build: PASS"
-            echo "- APK uploaded: $UPLOAD_APK"
+            echo "- Plaintext APK uploaded: $UPLOAD_APK"
+            echo "- Encrypted private-review handoff requested: $ENCRYPTED_DELIVERY"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Encrypt review APK for private intake
+        if: env.ENCRYPTED_DELIVERY == 'true' && env.TEST_ONLY != 'true'
+        working-directory: build-farm
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check 'cryptography>=45,<51'
+          python3 -m unittest discover -s tests -p test_m2_apk_envelope.py -v
+          mkdir -p "$RUNNER_TEMP/m2-review"
+          python3 scripts/m2_apk_envelope.py encrypt \
+            --input ../source/mobile/build/app/outputs/flutter-apk/app-debug.apk \
+            --output "$RUNNER_TEMP/m2-review/apk.enc" \
+            --manifest "$RUNNER_TEMP/m2-review/manifest.json" \
+            --source-sha "$(git -C ../source rev-parse HEAD)" \
+            --public-key security/m2_apk_review_public.pem
+
+      - name: Upload ciphertext only
+        if: env.ENCRYPTED_DELIVERY == 'true' && env.TEST_ONLY != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-translator-debug-apk-encrypted
+          path: |
+            ${{ runner.temp }}/m2-review/apk.enc
+            ${{ runner.temp }}/m2-review/manifest.json
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Upload debug APK only when explicitly requested
         if: env.UPLOAD_APK == 'true' && env.TEST_ONLY != 'true'
