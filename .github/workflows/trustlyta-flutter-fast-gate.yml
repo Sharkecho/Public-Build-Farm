@@ -46,7 +46,7 @@ jobs:
       - id: widget
         name: Run focused Flutter widget regression
         working-directory: source/mobile
-        run: flutter test test/widget_test.dart test/floating_audio_orb_test.dart test/startup_diagnostics_test.dart
+        run: flutter test test/app_theme_test.dart test/widget_test.dart test/floating_audio_orb_test.dart test/startup_diagnostics_test.dart
       - id: diagnose
         if: ${{ always() }}
         env:
