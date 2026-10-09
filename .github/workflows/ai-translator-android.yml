@@ -40,6 +40,8 @@ jobs:
   validate:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    outputs:
+      test_only: ${{ steps.resolve.outputs.test_only }}
 
     steps:
       - name: Checkout build request
@@ -50,11 +52,13 @@ jobs:
           fetch-depth: 1
 
       - name: Resolve source ref and artifact policy
+        id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_SOURCE_REF: ${{ inputs.source_ref }}
           INPUT_UPLOAD_APK: ${{ inputs.upload_apk }}
           INPUT_BUILD_ONLY: ${{ inputs.build_only }}
+          INPUT_TEST_ONLY: ${{ inputs.test_only }}
           DISPATCH_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
           DISPATCH_UPLOAD_APK: ${{ github.event.client_payload.upload_apk }}
         run: |
@@ -63,19 +67,24 @@ jobs:
             SOURCE_REF="$(python3 -c 'import json; print(json.load(open("build-farm/requests/ai-translator/current.json"))["source_ref"])')"
             UPLOAD_APK="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("upload_apk", False))).lower())')"
             BUILD_ONLY="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("build_only", False))).lower())')"
+            TEST_ONLY="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("test_only", False))).lower())')"
           elif [ "$EVENT_NAME" = "repository_dispatch" ]; then
             SOURCE_REF="$DISPATCH_SOURCE_REF"
             UPLOAD_APK="${DISPATCH_UPLOAD_APK:-false}"
             BUILD_ONLY=false
+            TEST_ONLY=false
           else
             SOURCE_REF="${INPUT_SOURCE_REF:-main}"
             UPLOAD_APK="${INPUT_UPLOAD_APK:-false}"
             BUILD_ONLY="${INPUT_BUILD_ONLY:-false}"
+            TEST_ONLY="${INPUT_TEST_ONLY:-false}"
           fi
           test -n "$SOURCE_REF"
           echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
           echo "UPLOAD_APK=$UPLOAD_APK" >> "$GITHUB_ENV"
           echo "BUILD_ONLY=$BUILD_ONLY" >> "$GITHUB_ENV"
+          echo "TEST_ONLY=$TEST_ONLY" >> "$GITHUB_ENV"
+          echo "test_only=$TEST_ONLY" >> "$GITHUB_OUTPUT"
 
       - name: Validate private source token is configured
         env:
@@ -110,17 +119,17 @@ jobs:
         run: flutter pub get
 
       - name: Analyze Flutter project
-        if: github.event_name != 'workflow_dispatch' || inputs.test_only != true
+        if: env.TEST_ONLY != 'true'
         working-directory: source/mobile
         run: flutter analyze
 
       - name: Run Flutter tests
-        if: env.BUILD_ONLY != 'true' && (github.event_name != 'workflow_dispatch' || inputs.test_only != true)
+        if: env.BUILD_ONLY != 'true' && env.TEST_ONLY != 'true'
         working-directory: source/mobile
         run: flutter test
 
       - name: Run focused M2 audio tests
-        if: github.event_name == 'workflow_dispatch' && inputs.test_only == true
+        if: env.TEST_ONLY == 'true'
         working-directory: source/mobile
         run: |
           set -euo pipefail
@@ -128,12 +137,12 @@ jobs:
           flutter test test/controller_test.dart test/live_audio_services_test.dart test/sherpa_local_inference_runtime_test.dart test/tts_router_test.dart
 
       - name: Build Android debug APK
-        if: github.event_name != 'workflow_dispatch' || inputs.test_only != true
+        if: env.TEST_ONLY != 'true'
         working-directory: source/mobile
         run: flutter build apk --debug
 
       - name: Record build evidence
-        if: github.event_name != 'workflow_dispatch' || inputs.test_only != true
+        if: env.TEST_ONLY != 'true'
         working-directory: source
         run: |
           set -euo pipefail
@@ -145,8 +154,8 @@ jobs:
           {
             echo "## AI Translator Android validation"
             echo
-            echo "- Source ref: `$SOURCE_REF`"
-            echo "- Source SHA: `$SOURCE_SHA`"
+            printf -- '- Source ref: `%s`\n' "$SOURCE_REF"
+            printf -- '- Source SHA: `%s`\n' "$SOURCE_SHA"
             echo "- Flutter analyze: PASS"
             if [ "$BUILD_ONLY" = "true" ]; then
               echo "- Flutter tests: NOT_RUN (explicit build-only request)"
@@ -158,7 +167,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload debug APK only when explicitly requested
-        if: env.UPLOAD_APK == 'true' && (github.event_name != 'workflow_dispatch' || inputs.test_only != true)
+        if: env.UPLOAD_APK == 'true' && env.TEST_ONLY != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ai-translator-debug-apk
@@ -168,7 +177,7 @@ jobs:
 
   report-status:
     needs: [validate]
-    if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.test_only != true) }}
+    if: ${{ always() && needs.validate.outputs.test_only != 'true' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
