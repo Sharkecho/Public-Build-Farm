@@ -1,6 +1,7 @@
 package com.clawgui.ng.runtime.update
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
@@ -34,6 +35,27 @@ object InAppUpdater {
             else @Suppress("DEPRECATION") info.versionCode.toLong()
     }
 
+    /** Reject signer changes before invoking the Android installer. */
+    @Suppress("DEPRECATION")
+    private fun signerFingerprints(context: Context, archive: String?): Set<String> {
+        val pm = context.packageManager
+        val flags = if (android.os.Build.VERSION.SDK_INT >= 28)
+            PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val packageInfo = if (archive == null)
+            pm.getPackageInfo(context.packageName, flags)
+        else pm.getPackageArchiveInfo(archive, flags)
+            ?: throw IllegalArgumentException("无法识别升级包签名")
+        val signatures = if (android.os.Build.VERSION.SDK_INT >= 28)
+            packageInfo.signingInfo?.apkContentsSigners?.toList()
+        else packageInfo.signatures?.toList()
+        require(!signatures.isNullOrEmpty()) { "升级包缺少有效的 APK 签名" }
+        return signatures.map { signature ->
+            MessageDigest.getInstance("SHA-256")
+                .digest(signature.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+        }.toSet()
+    }
+
     private fun connection(url: String): HttpURLConnection {
         val connection = (URL(url).openConnection() as HttpURLConnection)
         connection.connectTimeout = 12000
@@ -64,6 +86,9 @@ object InAppUpdater {
             val metadata = JSONObject(String(bytes, Charsets.UTF_8))
             require(metadata.optInt("schema_version", 0) == 1) { "更新协议版本不支持" }
             val code = metadata.optLong("version_code", 0L)
+            if (code == 0L && metadata.optString("status") == "NO_SIGNED_RELEASE") {
+                throw IllegalStateException("正式签名更新尚未发布")
+            }
             if (code <= installedVersion(context)) return@withContext null
             val tag = "gpt-androidos-v$code"
             val expectedUrl = "https://github.com/Sharkecho/Public-Build-Farm/releases/download/$tag/gpt-androidos.apk"
@@ -71,6 +96,11 @@ object InAppUpdater {
             val checksum = metadata.getString("sha256").lowercase()
             require(actualUrl == expectedUrl) { "升级包地址不在受信范围" }
             require(Regex("[0-9a-f]{64}").matches(checksum)) { "升级包校验值无效" }
+            val expectedSigner = metadata.optString("certificate_sha256").lowercase()
+            require(Regex("[0-9a-f]{64}").matches(expectedSigner)) { "升级清单缺少签名证书指纹" }
+            require(expectedSigner in signerFingerprints(context, null)) {
+                "新版本的签名与当前安装版不一致。首次从 Debug 版迁移时，请先备份配置并安装正式版。"
+            }
             Release(code, metadata.optString("version_name", tag).take(60), actualUrl, checksum)
         } finally {
             conn.disconnect()
@@ -117,6 +147,9 @@ object InAppUpdater {
             val apkCode = if (android.os.Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode
                 else @Suppress("DEPRECATION") packageInfo.versionCode.toLong()
             require(apkCode == release.versionCode) { "升级包版本号不匹配" }
+            require(signerFingerprints(context, null) == signerFingerprints(context, temporary.absolutePath)) {
+                "安装包签名与当前应用不同，无法直接覆盖。请先备份配置，再完成一次正式版迁移。"
+            }
             verified.delete()
             check(temporary.renameTo(verified)) { "无法保存已验证的升级包" }
             verified
