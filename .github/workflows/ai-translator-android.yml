@@ -104,7 +104,7 @@ jobs:
 
       - name: Build Android debug APK
         working-directory: source/mobile
-        run: flutter build apk --debug
+        run: flutter build apk --debug --target=integration_test/m2_shadow_device_test.dart
 
       - name: Build Android instrumentation test APK
         working-directory: source/mobile/android
