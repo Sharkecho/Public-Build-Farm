@@ -1,7 +1,7 @@
 {
-  "source_ref": "0790028a8dcb6ad077f254418d5ff63a08dd6958",
+  "source_ref": "a6459b2648d7e34dacac026e9c9a3dc2c6ac3933",
   "quality_gate": "G4",
-  "requested_by": "LiveBrain status verification",
-  "reason": "Verify private source access and run G4 after latest token-scope changes.",
-  "retry_seq": 3
+  "requested_by": "LiveBrain Public-Build-Farm CI verification",
+  "reason": "Run public G4 against LiveBrain-OS PR #22 after private Actions billing failure; no private source upload.",
+  "retry_seq": 4
 }
