@@ -8,11 +8,11 @@ Workflow: [CodingOS Agent Canvas Build](../actions/workflows/codingos-agent-canv
 
 Inputs:
 
-- `source_ref`: a branch or full SHA from `Sharkecho/CodingOS-AgentCanvas`; default `codingos/main`.
-- `test_scope`: `smoke` runs lint and the app build; `full` additionally runs unit tests and `build:lib`.
+- `source_sha`: a required full 40-character commit SHA from `Sharkecho/CodingOS-AgentCanvas`.
+- `test_scope`: `targeted` runs lint, the CodingOS Vitest path, and the app build; `extended` additionally runs `build:lib`.
 - `publish_artifacts`: off by default; when enabled, only redacted build metadata is uploaded.
 
-The workflow does not accept a repository or shell command as input. It checks out the fixed approved repository with `BUILD_FARM_SOURCE_TOKEN`, which must have Contents:Read access to CodingOS only (alongside the other explicitly approved repositories).
+The workflow does not accept a repository, branch, or shell command as input. It checks out the fixed approved repository at the requested full SHA with `BUILD_FARM_SOURCE_TOKEN`, verifies that `git rev-parse HEAD` matches the requested SHA, and writes the actual SHA and step outcomes to a redacted metadata report. The token must have Contents:Read access to CodingOS only (alongside the other explicitly approved repositories).
 
 ## Onboarding additional projects
 

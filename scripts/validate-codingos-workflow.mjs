@@ -17,6 +17,10 @@ function check(name, condition) {
 
 check("manual-only trigger", /^\s+workflow_dispatch:\s*$/m.test(workflow));
 check("fixed approved repository", /repository:\s+Sharkecho\/CodingOS-AgentCanvas/.test(workflow));
+check("full SHA input", /source_sha:[\s\S]*required:\s+true/.test(workflow));
+check("full SHA validation", /\[\[ \"\$SOURCE_SHA\" =~ \^\[0-9a-fA-F\]\{40\}\$/.test(workflow));
+check("checkout SHA recorded", /git rev-parse HEAD/.test(workflow));
+check("checkout SHA compared", /Checkout SHA mismatch/.test(workflow));
 check("read-only permissions", /permissions:\s*\n\s+contents:\s+read/.test(workflow));
 check("credential persistence disabled", /persist-credentials:\s+false/.test(workflow));
 check("hosted runner pinned", /runs-on:\s+ubuntu-22\.04/.test(workflow));
@@ -26,6 +30,8 @@ check(
   "no arbitrary command input",
   !/^\s+(command|shell|script):/m.test(dispatchInputs),
 );
+check("targeted vitest", /npm test -- --run --passWithNoTests __tests__\/codingos/.test(workflow));
+check("failure metadata is always attempted", /if: always\(\)/.test(workflow));
 check("no push or pull request trigger", !/^\s+(push|pull_request):/m.test(workflow));
 check("no source upload", !/path:\s+\.\/?\s*$|path:\s+\$\{\{\s*github\.workspace/.test(workflow));
 check("metadata upload is explicit", /build-farm-reports\/codingos\/build-metadata\.json/.test(workflow));
