@@ -1,7 +1,7 @@
 {
   "source_ref": "0790028a8dcb6ad077f254418d5ff63a08dd6958",
   "quality_gate": "G4",
-  "requested_by": "LiveBrain G4 verification after PAT scope update",
-  "reason": "Verify LiveBrain-OS private checkout and run full G4 after source-token repository scope change.",
-  "retry_seq": 2
+  "requested_by": "LiveBrain status verification",
+  "reason": "Verify private source access and run G4 after latest token-scope changes.",
+  "retry_seq": 3
 }
