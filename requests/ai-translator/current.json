@@ -1,6 +1,6 @@
 {
   "source_ref": "6a1e64c96ca080bb0507e2da5672155c3e7eb24d",
-  "upload_apk": false,
+  "upload_apk": true,
   "requested_by": "Trustlyta M2 Android verification",
-  "reason": "Trustlyta M2 review build with production HTTPS endpoint, validation only: avoid public APK upload"
+  "reason": "Approved temporary public debug APK artifact for Trustlyta M2 reviewer; transfer to private owner storage then remove public artifact"
 }
