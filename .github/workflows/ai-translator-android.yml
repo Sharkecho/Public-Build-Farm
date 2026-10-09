@@ -106,6 +106,10 @@ jobs:
         working-directory: source/mobile
         run: flutter build apk --debug
 
+      - name: Build Android instrumentation test APK
+        working-directory: source/mobile/android
+        run: ./gradlew app:assembleAndroidTest --no-daemon
+
       - name: Record build evidence
         working-directory: source
         run: |
@@ -130,8 +134,10 @@ jobs:
         if: env.UPLOAD_APK == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ai-translator-debug-apk
-          path: source/mobile/build/app/outputs/flutter-apk/app-debug.apk
+          name: ai-translator-debug-and-androidTest-apk
+          path: |
+            source/mobile/build/app/outputs/flutter-apk/app-debug.apk
+            source/mobile/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
           retention-days: 3
 
