@@ -1,6 +1,8 @@
 {
-  "source_ref": "d4a58dc489e23e0ddcd02dafc352683bddc7eecd",
+  "source_ref": "c6c1e9c0b13bfda750755f907b8c4a48fd677311",
   "upload_apk": false,
-  "requested_by": "Trustlyta M2 Android verification",
-  "reason": "Trustlyta Android background updater compile, widget and APK compatibility regression before signed review build"
+  "build_only": true,
+  "requested_by": "Trustlyta M2 PR #33 integration",
+  "reason": "Independent debug APK compile for exact PR #33 source SHA; full UI gate remains separate"
 }
+
