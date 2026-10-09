@@ -64,10 +64,10 @@ jobs:
         timeout-minutes: 8
         run: flutter test test/widget_test.dart test/floating_audio_orb_test.dart
       - id: apk_build
-        name: Build Android debug package
+        name: Build Android release-runtime package (emulator test signature)
         timeout-minutes: 15
         working-directory: source/mobile
-        run: flutter build apk --debug
+        run: flutter build apk --release --build-number=101 --dart-define=API_BASE_URL=https://43-163-91-54.sslip.io
       - id: kvm
         name: Grant ephemeral Runner access to KVM
         shell: bash
@@ -90,12 +90,16 @@ jobs:
           disable-spellchecker: true
           script: |
             set -eu
-            adb install -r source/mobile/build/app/outputs/flutter-apk/app-debug.apk
-            adb shell am start -n com.sharkecho.ai_translator/.MainActivity
+            adb install -r source/mobile/build/app/outputs/flutter-apk/app-release.apk
+            adb logcat -c -b crash
+            adb shell am start -W -n com.sharkecho.ai_translator/.MainActivity
             sleep 15
             adb shell pidof com.sharkecho.ai_translator >/dev/null
             adb shell dumpsys activity activities | grep -q 'com.sharkecho.ai_translator'
-            test -z "$(adb logcat -d -b crash | grep -E 'FATAL EXCEPTION|Fatal signal')"
+            if adb logcat -d -b crash | grep -Eq 'FATAL EXCEPTION|Fatal signal'; then
+              adb logcat -d -b crash -v threadtime | tail -160
+              exit 1
+            fi
             echo 'EMULATOR_INSTALL_LAUNCH_SMOKE=PASS'
       - name: Public-safe summary
         if: always()

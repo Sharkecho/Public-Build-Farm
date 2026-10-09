@@ -1,5 +1,5 @@
 {
-  "source_sha": "19850332c595ef13f9d76eea0f3100aba597a460",
-  "test_scope": "v100_signed_candidate_install_launch_crash_repro",
+  "source_sha": "aa2cec6fe536837c44924d720bb80231b21f76a6",
+  "test_scope": "v101_release_runtime_install_launch_crash_smoke",
   "apk_publish": false
 }
