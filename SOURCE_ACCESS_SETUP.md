@@ -12,7 +12,6 @@ Recommended configuration:
 - Repository access: **Only select repositories**
   - `MT3000`
   - `note9-liveos`
-  - `ai-translator`
   - `CentoreOS`
   - `LiveBrain-OS`
 - Repository permissions:
@@ -37,11 +36,10 @@ Value: the fine-grained PAT created above.
 
 Run only one small/fast public build first:
 
-1. `AI Translator Android Build (public build farm)`, source_ref=`main`, publish_apk=false.
-2. After PASS, run `CentoreOS Desktop Build`, publish_binary=false.
-3. Then run Note9 baseline when needed.
-4. Run LiveBrain Production Quality Gate, source_ref=`main`, quality_gate=`G4`.
-5. Run MT3000 LiveOS base last because it is the longest build.
+1. `CentoreOS Desktop Build`, publish_binary=false.
+2. Then run Note9 baseline when needed.
+3. Run LiveBrain Production Quality Gate, source_ref=`main`, quality_gate=`G4`.
+4. Run MT3000 LiveOS base last because it is the longest build.
 
 Do not enable automatic push/PR triggers after verification.
 
@@ -49,6 +47,5 @@ Do not enable automatic push/PR triggers after verification.
 
 Public-Build-Farm is public. Any uploaded Actions artifact must be treated as publicly visible.
 
-- AI Translator APK upload is OFF by default.
 - CentoreOS EXE upload is OFF by default.
 - MT3000/Note9 build artifacts are intended build outputs; never add source archives or private evidence bundles to uploads.

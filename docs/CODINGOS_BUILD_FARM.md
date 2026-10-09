@@ -25,5 +25,3 @@ The workflow does not accept a repository, branch, or shell command as input. It
 5. a documented rollback that disables only that project's workflow.
 
 Do not replace the mapping with a user-supplied repository name or arbitrary command input. This public repository's artifacts are public; never upload source trees, credentials, private logs, or production evidence.
-
-AI Translator v101 remains on its existing path until its owner separately approves migration after this workflow pattern has passed acceptance.

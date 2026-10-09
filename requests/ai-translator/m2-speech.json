@@ -1,7 +1,0 @@
-{
-  "source_ref": "dd07a207d6a20955f26b4c923382e456b6dd99ed",
-  "upload_model_artifacts": false,
-  "requested_by": "AI Translator M2",
-  "reason": "M2 real ONNX CPU + offline security/stress regression; immutable source commit",
-  "gate_version": "m2-audio-real-model-security-stress-v1"
-}
