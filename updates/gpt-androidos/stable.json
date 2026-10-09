@@ -1,8 +1,9 @@
 {
   "schema_version": 1,
-  "version_code": 0,
-  "version_name": "尚未发布签名升级包",
-  "apk_url": "",
-  "sha256": "",
-  "status": "NO_SIGNED_RELEASE"
+  "version_code": 3,
+  "version_name": "0.2.0-gpt.3",
+  "apk_url": "https://github.com/Sharkecho/Public-Build-Farm/releases/download/gpt-androidos-v3/gpt-androidos.apk",
+  "sha256": "27494c7e6686a77984ed6f86473da0f743f9f606d3f8dbf9cb1fae56b7ef2964",
+  "certificate_sha256": "b2ff8e4523ffaa0368f5e5687326c18ab66f105bda7390d0d8c64d0b9929d367",
+  "status": "SIGNED_RELEASE"
 }
