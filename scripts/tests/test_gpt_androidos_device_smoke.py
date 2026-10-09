@@ -67,6 +67,37 @@ class DeviceSmokeTests(unittest.TestCase):
                     module.smoke("adb", apk=apk, expected_sha256="0" * 64, install=True)
         self.assertFalse(any(p[0] == "install" for _, p in calls))
 
+    def test_opt_in_ui_capture_saves_local_png_and_xml_and_cleans_remote(self):
+        from types import SimpleNamespace
+        calls = []
+        def adb(adb, parts, serial=None, timeout=30):
+            calls.append(tuple(parts))
+            if parts[:3] == ["shell", "uiautomator", "dump"]:
+                return "UI hiercharchy dumped"
+            if parts[:2] == ["exec-out", "cat"]:
+                return '<?xml version="1.0"?><hierarchy rotation="0"></hierarchy>'
+            if parts[:3] == ["shell", "rm", "-f"]:
+                return ""
+            raise AssertionError(f"unexpected ADB operation: {parts}")
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(module, "adb_run", side_effect=adb):
+                with patch.object(module.subprocess, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout=bytes.fromhex("89504e470d0a1a0a") + b"fake")):
+                    data = module.capture_ui_evidence("adb", "ABC123", Path(d))
+            self.assertTrue((Path(d) / "agent-screen.png").is_file())
+            self.assertIn("hierarchy", (Path(d) / "agent-ui.xml").read_text())
+            self.assertTrue(data["evidence_local_only"])
+            self.assertTrue(any(p[:3] == ("shell", "rm", "-f") for p in calls))
+
+    def test_ui_capture_rejects_non_png(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(module.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=b"not a PNG")):
+                with self.assertRaisesRegex(module.DeviceError, "not PNG"):
+                    module.capture_ui_evidence("adb", "ABC123", Path(d))
+            self.assertFalse((Path(d) / "agent-screen.png").exists())
+
     def test_explicit_install_then_launch(self):
         calls = []
         with tempfile.TemporaryDirectory() as directory:
