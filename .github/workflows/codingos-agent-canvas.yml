@@ -55,15 +55,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
       - name: Record checked out SHA
         id: checkout_sha
         shell: bash
@@ -75,12 +66,21 @@ jobs:
           [[ "$ACTUAL_SHA" == "$SOURCE_SHA" ]] || { echo "Checkout SHA mismatch" >&2; exit 1; }
           echo "actual_sha=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Lint
         run: npm run lint
 
       - name: Targeted Vitest
         id: targeted_tests
-        run: npm test -- --run --passWithNoTests __tests__/codingos
+        run: npm test -- --run __tests__/codingos
 
       - name: Application build
         id: app_build

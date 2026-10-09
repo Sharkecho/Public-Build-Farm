@@ -30,7 +30,9 @@ check(
   "no arbitrary command input",
   !/^\s+(command|shell|script):/m.test(dispatchInputs),
 );
-check("targeted vitest", /npm test -- --run --passWithNoTests __tests__\/codingos/.test(workflow));
+check("targeted vitest", /npm test -- --run __tests__\/codingos/.test(workflow));
+check("no pass-with-no-tests bypass", !/passWithNoTests/.test(workflow));
+check("SHA before npm ci", workflow.indexOf("Record checked out SHA") < workflow.indexOf("npm ci"));
 check("failure metadata is always attempted", /if: always\(\)/.test(workflow));
 check("no push or pull request trigger", !/^\s+(push|pull_request):/m.test(workflow));
 check("no source upload", !/path:\s+\.\/?\s*$|path:\s+\$\{\{\s*github\.workspace/.test(workflow));
