@@ -112,7 +112,8 @@ object InAppUpdater {
 
             @Suppress("DEPRECATION")
             val packageInfo = context.packageManager.getPackageArchiveInfo(temporary.absolutePath, 0)
-            require(packageInfo?.packageName == context.packageName) { "升级包包名不匹配" }
+                ?: throw IllegalArgumentException("升级包不是有效的 APK")
+            require(packageInfo.packageName == context.packageName) { "升级包包名不匹配" }
             val apkCode = if (android.os.Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode
                 else @Suppress("DEPRECATION") packageInfo.versionCode.toLong()
             require(apkCode == release.versionCode) { "升级包版本号不匹配" }
