@@ -13,7 +13,6 @@ Recommended configuration:
   - `MT3000`
   - `note9-liveos`
   - `CentoreOS`
-  - `LiveBrain-OS`
 - Repository permissions:
   - **Contents: Read-only**
   - everything else: No access / default
@@ -38,8 +37,7 @@ Run only one small/fast public build first:
 
 1. `CentoreOS Desktop Build`, publish_binary=false.
 2. Then run Note9 baseline when needed.
-3. Run LiveBrain Production Quality Gate, source_ref=`main`, quality_gate=`G4`.
-4. Run MT3000 LiveOS base last because it is the longest build.
+3. Run MT3000 LiveOS base last because it is the longest build.
 
 Do not enable automatic push/PR triggers after verification.
 
