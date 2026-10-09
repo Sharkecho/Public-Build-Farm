@@ -1,0 +1,149 @@
+name: GPT-AndroidOS Signed Production Release
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: "versionCode (first signed release 3; monotonic)"
+        required: true
+        default: "3"
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: androidos-production-release
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test release contract
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_androidos_release_manifest.py -v
+          python3 scripts/agent-update/release_manifest.py --version-code "$VERSION_CODE"
+  publish:
+    needs: preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    environment: androidos-production
+    permissions:
+      contents: write
+    env:
+      VERSION_CODE: ${{ inputs.version_code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: farm
+          persist-credentials: false
+      - name: Validate protected environment
+        env:
+          KEY_B64: ${{ secrets.ANDROIDOS_SIGNING_KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.ANDROIDOS_SIGNING_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROIDOS_SIGNING_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROIDOS_SIGNING_KEY_ALIAS }}
+          CERT_PIN: ${{ vars.ANDROIDOS_CERT_SHA256 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$KEY_B64" && test -n "$STORE_PASS" && test -n "$KEY_PASS" && test -n "$KEY_ALIAS"
+          [[ "$CERT_PIN" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "Configure 64-hex ANDROIDOS_CERT_SHA256"; exit 1; }
+          python3 farm/scripts/agent-update/release_manifest.py --current farm/updates/gpt-androidos/stable.json --version-code "$VERSION_CODE"
+          if gh release view "gpt-androidos-v$VERSION_CODE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "Release tag already exists"; exit 1; fi
+      - uses: actions/checkout@v4
+        with:
+          repository: ZJU-REAL/ClawGUI
+          ref: d990d3e3f2390ced708771d9681d3c4f9a6cbef5
+          path: upstream
+          sparse-checkout: clawgui-app
+          persist-credentials: false
+      - name: Patch pinned source and verify
+        run: |
+          set -euo pipefail
+          test "$(git -C upstream rev-parse HEAD)" = "d990d3e3f2390ced708771d9681d3c4f9a6cbef5"
+          python3 farm/scripts/gpt-androidos-public-patch.py --source upstream/clawgui-app --version-code "$VERSION_CODE"
+          python3 farm/scripts/gpt-androidos-public-patch.py --source upstream/clawgui-app --version-code "$VERSION_CODE" --verify-only
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install SDK signing tools
+        run: |
+          set -euo pipefail
+          sdkroot="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$sdkroot" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdkroot" >> "$GITHUB_ENV"
+          manager="$(command -v sdkmanager || true)"
+          if [ -z "$manager" ]; then manager="$(find "$sdkroot/cmdline-tools" -maxdepth 3 -type f -name sdkmanager 2>/dev/null | sort -V | tail -1)"; fi
+          if [ -z "$manager" ]; then
+            mkdir -p "$sdkroot/cmdline-tools"
+            curl -fsSL --retry 3 --connect-timeout 20 -o "$RUNNER_TEMP/android-cmdline.zip" "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q "$RUNNER_TEMP/android-cmdline.zip" -d "$RUNNER_TEMP"
+            mv "$RUNNER_TEMP/cmdline-tools" "$sdkroot/cmdline-tools/latest"
+            manager="$sdkroot/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$manager" --sdk_root="$sdkroot" --licenses >/dev/null || test "${PIPESTATUS[1]}" -eq 0
+          "$manager" --sdk_root="$sdkroot" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          test -x "$sdkroot/build-tools/36.0.0/apksigner"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build unsigned production APK
+        working-directory: upstream/clawgui-app
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+      - name: Sign and verify fixed-certificate APK
+        env:
+          KEY_B64: ${{ secrets.ANDROIDOS_SIGNING_KEYSTORE_B64 }}
+          ANDROIDOS_STORE_PASSWORD: ${{ secrets.ANDROIDOS_SIGNING_STORE_PASSWORD }}
+          ANDROIDOS_KEY_PASSWORD: ${{ secrets.ANDROIDOS_SIGNING_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROIDOS_SIGNING_KEY_ALIAS }}
+          CERT_PIN: ${{ vars.ANDROIDOS_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          tmp="$RUNNER_TEMP/androidos-production"
+          mkdir -p "$tmp"
+          trap 'rm -f "$tmp/key.jks" "$tmp/aligned.apk"' EXIT
+          printf '%s' "$KEY_B64" | base64 --decode > "$tmp/key.jks"
+          test -s "$tmp/key.jks"
+          tools="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          "$tools/zipalign" -f -p 4 upstream/clawgui-app/app/build/outputs/apk/release/app-release-unsigned.apk "$tmp/aligned.apk"
+          "$tools/apksigner" sign --ks "$tmp/key.jks" --ks-key-alias "$KEY_ALIAS" --ks-pass env:ANDROIDOS_STORE_PASSWORD --key-pass env:ANDROIDOS_KEY_PASSWORD --out "$tmp/gpt-androidos.apk" "$tmp/aligned.apk"
+          "$tools/apksigner" verify --verbose "$tmp/gpt-androidos.apk"
+          "$tools/zipalign" -c -p 4 "$tmp/gpt-androidos.apk"
+          digest="$("$tools/apksigner" verify --print-certs "$tmp/gpt-androidos.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr '[:upper:]' '[:lower:]' | head -1)"
+          test -n "$digest" && test "$digest" = "$(printf '%s' "$CERT_PIN" | tr '[:upper:]' '[:lower:]')" || { echo "Signer certificate mismatch"; exit 1; }
+          info="$("$tools/aapt" dump badging "$tmp/gpt-androidos.apk" | head -1)"
+          printf '%s\n' "$info" | grep -F "name='com.clawgui.ng'" >/dev/null
+          printf '%s\n' "$info" | grep -F "versionCode='$VERSION_CODE'" >/dev/null
+          printf '%s\n' "$info" | grep -F "versionName='0.2.0-gpt.$VERSION_CODE'" >/dev/null
+          unzip -tq "$tmp/gpt-androidos.apk" >/dev/null
+          echo "APK_SHA256=$(sha256sum "$tmp/gpt-androidos.apk" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "CERT_SHA256=$digest" >> "$GITHUB_ENV"
+          echo "SIGNED_APK=$tmp/gpt-androidos.apk" >> "$GITHUB_ENV"
+      - name: Publish signed immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="gpt-androidos-v$VERSION_CODE"
+          gh release create "$tag" "$SIGNED_APK#gpt-androidos.apk" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "GPT-AndroidOS v0.2.0-gpt.$VERSION_CODE" --notes "Fixed-signature production APK; Android requires user confirmation." --latest
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx 'gpt-androidos.apk'
+      - name: Publish live manifest only after release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: farm
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-update/release_manifest.py --version-code "$VERSION_CODE" --sha256 "$APK_SHA256" --certificate-sha256 "$CERT_SHA256" --output "$RUNNER_TEMP/stable-new.json"
+          gh api "repos/$GITHUB_REPOSITORY/contents/updates/gpt-androidos/stable.json?ref=main" > "$RUNNER_TEMP/live.json"
+          sha="$(jq -r '.sha' "$RUNNER_TEMP/live.json")"
+          jq -r '.content' "$RUNNER_TEMP/live.json" | base64 --decode > "$RUNNER_TEMP/stable-old.json"
+          python3 scripts/agent-update/release_manifest.py --current "$RUNNER_TEMP/stable-old.json" --version-code "$VERSION_CODE"
+          encoded="$(base64 -w0 "$RUNNER_TEMP/stable-new.json")"
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/updates/gpt-androidos/stable.json" -f message="release(androidos): publish signed stable v$VERSION_CODE" -f branch=main -f sha="$sha" -f content="$encoded" >/dev/null
+          echo "Signed APK v$VERSION_CODE published and update feed activated." >> "$GITHUB_STEP_SUMMARY"
