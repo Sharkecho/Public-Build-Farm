@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "gate": "trustlyta-android-emulator",
-  "run_id": 37909562068,
-  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37909562068",
-  "source_sha": "ea1b72f07c36ef62b02f177e4518b8541eb31865",
+  "run_id": 37914003567,
+  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37914003567",
+  "source_sha": "2191f2d595210a07d1080a96244cbdc56544b790",
   "result": "success",
   "failure_stage": "none",
   "verified_pass": true,
-  "finished_at": "2026-10-09T09:21:45.699Z"
+  "finished_at": "2026-10-09T10:02:14.809Z"
 }
