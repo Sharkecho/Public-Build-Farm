@@ -39,6 +39,31 @@ jobs:
           code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --connect-timeout 7 --max-time 20 --proto '=https' --tlsv1.2 "https://$host/health")"
           test "$code" = 200 || { echo "HTTPS_HEALTH_HTTP_STATUS=$code"; exit 22; }
           echo "HTTPS_PUBLIC_GATE=PASS"
+          # Verify signed update feed and APK integrity from outside Singapore.
+          python3 - <<'PY'
+          import hashlib,json,urllib.request
+          root="https://43-163-91-54.sslip.io"
+          with urllib.request.urlopen(root+"/updates/android/latest.json", timeout=20) as response:
+              manifest=json.loads(response.read(16385))
+          assert manifest["packageName"]=="com.sharkecho.ai_translator"
+          assert int(manifest["versionCode"]) >= 100
+          url=manifest["apkUrl"]
+          assert url.startswith(root+"/updates/android/") and url.endswith(".apk")
+          expected=manifest["sha256"]
+          assert len(expected)==64 and all(c in "0123456789abcdef" for c in expected)
+          digest=hashlib.sha256()
+          length=0
+          with urllib.request.urlopen(url,timeout=40) as response:
+              while True:
+                  piece=response.read(65536)
+                  if not piece:break
+                  length+=len(piece)
+                  assert length<=350*1024*1024
+                  digest.update(piece)
+          assert length==manifest["sizeBytes"]
+          assert digest.hexdigest()==expected
+          print("SIGNED_UPDATE_APK_SHA256=PASS")
+          PY
   report:
     needs: [verify]
     if: ${{ always() }}
