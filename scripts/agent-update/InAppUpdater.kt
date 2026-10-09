@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -48,7 +49,17 @@ object InAppUpdater {
         try {
             require(conn.responseCode == 200) { "更新服务不可用：HTTP ${conn.responseCode}" }
             require(conn.contentLengthLong <= MAX_METADATA) { "更新清单超过大小限制" }
-            val bytes = conn.inputStream.use { it.readNBytes(MAX_METADATA + 1) }
+            val bytes = conn.inputStream.use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(4096)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    require(output.size() + count <= MAX_METADATA) { "更新清单超过大小限制" }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
             require(bytes.size <= MAX_METADATA) { "更新清单超过大小限制" }
             val metadata = JSONObject(String(bytes, Charsets.UTF_8))
             require(metadata.optInt("schema_version", 0) == 1) { "更新协议版本不支持" }
