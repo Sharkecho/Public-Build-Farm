@@ -181,8 +181,8 @@ private fun InAppUpdateCard() {
     update_file(settings, "badge = if (installed) \"已检测到 App\" else null,", "badge = if (installed) \"Shizuku 服务已启动\" else null,", verify_only)
     update_file(settings, "installed -> \"Shizuku App 已装,但 ClawGUI 还没拿到授权\"", "installed -> \"Shizuku 服务正在运行，请点击下方按钮申请授权\"", verify_only)
     update_file(settings, "else -> \"未检测到 Shizuku App\"", "else -> \"未连接 Shizuku 服务，请先在 Shizuku App 中启动服务\"", verify_only)
-    update_file(settings, "                            pollShizukuReady(timeoutMs = 3000L)", "                            pollShizukuReady(timeoutMs = 15000L)", verify_only)
-    update_file(settings, "                        pollShizukuReady(timeoutMs = 3000L)", "                        pollShizukuReady(timeoutMs = 15000L)", verify_only)
+    update_file(settings, "                            runCatching { RuntimeContainer.device.bindService() }\n                            pollShizukuReady(timeoutMs = 3000L)", "                            runCatching { RuntimeContainer.device.bindService() }\n                            pollShizukuReady(timeoutMs = 15000L)", verify_only)
+    update_file(settings, "                        runCatching { RuntimeContainer.device.bindService() }\n                        pollShizukuReady(timeoutMs = 3000L)", "                        runCatching { RuntimeContainer.device.bindService() }\n                        pollShizukuReady(timeoutMs = 15000L)", verify_only)
 
     manifest = root / "app/src/main/AndroidManifest.xml"
     update_file(manifest,
