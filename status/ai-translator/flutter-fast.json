@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "gate": "trustlyta-flutter-fast",
-  "run_id": 37909305953,
+  "run_id": 37909323424,
   "source_sha": "42426c3358f42fa4abd94c78860366ef23c6434b",
   "result": "success",
   "failed_step": "none",
   "verified_pass": true,
-  "finished_at": "2026-10-09T09:09:32.879Z"
+  "finished_at": "2026-10-09T09:09:43.546Z"
 }
