@@ -78,6 +78,107 @@ def apply(root: Path, verify_only: bool) -> None:
     update_file(prompts, PROMPTS_ANCHOR, PROMPTS_ANCHOR + "\n" + AUDIO_QUICK_CARDS, verify_only)
     update_file(screen, WELCOME_OLD, WELCOME_NEW, verify_only)
     update_file(screen, SUBTITLE_OLD, SUBTITLE_NEW, verify_only)
+
+    # Online update is an optional user-confirmed APK upgrade, never a silent install.
+    settings = root / "app/src/main/kotlin/com/clawgui/ng/ui/screens/SettingsScreen.kt"
+    settings_src = settings.read_text(encoding="utf-8")
+    widget_marker = "private fun InAppUpdateCard()"
+    widget = '''
+@androidx.compose.runtime.Composable
+private fun InAppUpdateCard() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var state by remember { mutableStateOf("可联网检查正式发布的新版本") }
+    var pending by remember { mutableStateOf<com.clawgui.ng.runtime.update.InAppUpdater.Release?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("在线升级", style = MaterialTheme.typography.titleMedium)
+            Text("当前版本：\u0024{com.clawgui.ng.runtime.update.InAppUpdater.installedVersion(context)}",
+                style = MaterialTheme.typography.bodySmall)
+            Text(state, style = MaterialTheme.typography.bodySmall)
+            androidx.compose.material3.Button(
+                enabled = !busy,
+                onClick = {
+                    val release = pending
+                    if (release == null) {
+                        scope.launch {
+                            busy = true
+                            state = "正在检查更新…"
+                            try {
+                                val available = com.clawgui.ng.runtime.update.InAppUpdater.check(context)
+                                pending = available
+                                state = if (available == null) "已经是最新正式版本"
+                                else "发现版本 \u0024{available.versionName}，点击升级"
+                            } catch (e: Exception) {
+                                state = "检查失败：\u0024{e.message ?: "网络错误"}"
+                            } finally { busy = false }
+                        }
+                    } else if (!com.clawgui.ng.runtime.update.InAppUpdater.mayRequestInstall(context)) {
+                        state = "请允许本应用安装更新，然后再次点击升级"
+                        com.clawgui.ng.runtime.update.InAppUpdater.openInstallPermission(context)
+                    } else {
+                        scope.launch {
+                            busy = true
+                            state = "正在下载并校验安装包…"
+                            try {
+                                val apk = com.clawgui.ng.runtime.update.InAppUpdater.download(context, release)
+                                com.clawgui.ng.runtime.update.InAppUpdater.requestInstall(context, apk)
+                                state = "请在安卓系统安装界面确认覆盖升级"
+                            } catch (e: Exception) {
+                                state = "升级失败：\u0024{e.message ?: "未知错误"}"
+                            } finally { busy = false }
+                        }
+                    }
+                },
+            ) {
+                Text(if (busy) "请稍候" else if (pending == null) "检查更新" else "立即升级")
+            }
+        }
+    }
+}
+'''
+    if widget_marker not in settings_src:
+        if verify_only:
+            raise RuntimeError("Update control not applied to SettingsScreen.kt")
+        idx = settings_src.index("\n@Composable\nprivate fun SectionLabel")
+        settings_src = settings_src[:idx] + "\n" + widget + settings_src[idx:]
+        settings.write_text(settings_src, encoding="utf-8")
+    update_file(settings,
+                '        InfoCard("开源协议 Apache-2.0 · 仓库:github.com/ZJU-REAL/ClawGUI")',
+                '        InfoCard("开源协议 Apache-2.0 · 仓库:github.com/ZJU-REAL/ClawGUI")\n        InAppUpdateCard()',
+                verify_only)
+
+    manifest = root / "app/src/main/AndroidManifest.xml"
+    update_file(manifest,
+                '    <uses-permission android:name="android.permission.INTERNET" />',
+                '    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />',
+                verify_only)
+    provider_paths = root / "app/src/main/res/xml/file_provider_paths.xml"
+    update_file(provider_paths, '</paths>',
+                '    <cache-path name="app_updates" path="updates/" />\n</paths>',
+                verify_only)
+    updater_file = root / "app/src/main/kotlin/com/clawgui/ng/runtime/update/InAppUpdater.kt"
+    update_template = Path(__file__).resolve().parent / "agent-update/InAppUpdater.kt"
+    expected = update_template.read_bytes()
+    if updater_file.exists():
+        if updater_file.read_bytes() != expected:
+            raise RuntimeError("Updater Kotlin source differs from pinned public template")
+    elif verify_only:
+        raise RuntimeError("Updater Kotlin source not applied")
+    else:
+        updater_file.parent.mkdir(parents=True, exist_ok=True)
+        updater_file.write_bytes(expected)
+
+    gradle = root / "app/build.gradle.kts"
+    update_file(gradle, 'versionCode = 1', 'versionCode = 2', verify_only)
+    update_file(gradle, 'versionName = "0.2.0"', 'versionName = "0.2.0-gpt.2"', verify_only)
+
     check = apps.read_text(encoding="utf-8")
     label = strings.read_text(encoding="utf-8")
     if not all(a in check for a in ALIASES) or NEW_LABEL not in label:
@@ -85,6 +186,7 @@ def apply(root: Path, verify_only: bool) -> None:
     print("GUI_AUDIO_ALIAS=PASS")
     print("APP_NAME=GPT-AndroidOS")
     print("AGENT_HOME_QUICK_CARDS=2")
+    print("IN_APP_UPDATE=USER_APPROVED_SIGNED_APK")
     print("REALTIME_AUDIO_UNCHANGED=YES")
     print("PRIVILEGED_AUDIO_BRIDGE=NOT_IMPLEMENTED")
 
