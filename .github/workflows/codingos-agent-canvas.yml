@@ -1,0 +1,123 @@
+name: CodingOS Agent Canvas Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch or full commit SHA in the approved CodingOS repository
+        required: true
+        default: codingos/main
+        type: string
+      test_scope:
+        description: Verification scope
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - full
+      publish_artifacts:
+        description: Upload approved non-secret build metadata only
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codingos-agent-canvas-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPOSITORY: Sharkecho/CodingOS-AgentCanvas
+  REPORT_DIR: build-farm-reports/codingos
+
+jobs:
+  build:
+    name: CodingOS (${{ inputs.test_scope }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate approved ref
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "Invalid source_ref characters" >&2
+            exit 1
+          fi
+          if [[ "$SOURCE_REF" == /* || "$SOURCE_REF" == *..* || "$SOURCE_REF" == *$'\n'* ]]; then
+            echo "Invalid source_ref" >&2
+            exit 1
+          fi
+
+      - name: Checkout approved private source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/CodingOS-AgentCanvas
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Smoke build
+        if: inputs.test_scope == 'smoke'
+        run: npm run build
+
+      - name: Full unit and library checks
+        if: inputs.test_scope == 'full'
+        run: |
+          npm test
+          npm run build
+          npm run build:lib
+
+      - name: Write redacted build metadata
+        if: always()
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          TEST_SCOPE: ${{ inputs.test_scope }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_DIR"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = process.env.REPORT_DIR;
+          const report = {
+            project: 'CodingOS-AgentCanvas',
+            sourceRepository: 'Sharkecho/CodingOS-AgentCanvas',
+            sourceRef: process.env.SOURCE_REF,
+            testScope: process.env.TEST_SCOPE,
+            status: process.env.JOB_STATUS,
+            runId: process.env.RUN_ID,
+            runAttempt: process.env.RUN_ATTEMPT,
+          };
+          fs.writeFileSync(`${path}/build-metadata.json`, `${JSON.stringify(report, null, 2)}\n`);
+          NODE
+
+      - name: Upload approved metadata
+        if: always() && inputs.publish_artifacts == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: codingos-build-metadata-${{ github.run_id }}
+          path: build-farm-reports/codingos/build-metadata.json
+          if-no-files-found: error
+          retention-days: 7
