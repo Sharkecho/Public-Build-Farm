@@ -1,6 +1,1 @@
-{
-  "source_sha": "ea1b72f07c36ef62b02f177e4518b8541eb31865",
-  "version_code": 101,
-  "flavor": "v101-startup-gate",
-  "distribution": "unsigned-to-protected-private-signing"
-}
+{"source_sha":"2191f2d595210a07d1080a96244cbdc56544b790","version_code":102,"flavor":"v102-workdatabase-runtime-gate","distribution":"unsigned-to-protected-private-signing"}
