@@ -15,7 +15,7 @@ ALIASES = (
     '        "Note9 LiveAudio" to "com.note9.uac2",',
 )
 ANCHOR = "        // Social & Messaging"
-PROMPTS_ANCHOR = '    val list: List<PromptCard> = listOf(\\n'
+PROMPTS_ANCHOR = '    val list: List<PromptCard> = listOf('
 AUDIO_QUICK_CARDS = '''        PromptCard(
             id = "gpt_audio_health",
             emoji = "\\uD83C\\uDFA7",
@@ -75,8 +75,7 @@ def apply(root: Path, verify_only: bool) -> None:
     update_file(strings, OLD_LABEL, NEW_LABEL, verify_only)
     prompts = root / "app/src/main/kotlin/com/clawgui/ng/data/PromptCards.kt"
     screen = root / "app/src/main/kotlin/com/clawgui/ng/ui/screens/ChatScreen.kt"
-    update_file(prompts, PROMPTS_ANCHOR.replace("\\\\n", "\\n"),
-                PROMPTS_ANCHOR.replace("\\\\n", "\\n") + AUDIO_QUICK_CARDS, verify_only)
+    update_file(prompts, PROMPTS_ANCHOR, PROMPTS_ANCHOR + "\n" + AUDIO_QUICK_CARDS, verify_only)
     update_file(screen, WELCOME_OLD, WELCOME_NEW, verify_only)
     update_file(screen, SUBTITLE_OLD, SUBTITLE_NEW, verify_only)
     check = apps.read_text(encoding="utf-8")
