@@ -1,9 +1,10 @@
 {
   "source_ref": "c6c1e9c0b13bfda750755f907b8c4a48fd677311",
   "upload_apk": false,
-  "build_only": false,
-  "test_only": true,
+  "build_only": true,
+  "test_only": false,
+  "encrypted_delivery": true,
   "requested_by": "Trustlyta M2 PR #33 integration",
-  "reason": "Focused M2 audio tests for exact PR #33 source SHA; skip repeat APK build"
+  "reason": "Encrypted private review APK for tested M2 source SHA; never upload plaintext to public artifact"
 }
 
