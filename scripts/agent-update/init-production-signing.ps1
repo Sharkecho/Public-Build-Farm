@@ -40,7 +40,7 @@ if ((Test-Path $keyFile) -xor (Test-Path $passwordFile)) {
     throw 'Incomplete existing signing material. Refusing to overwrite or rotate signing key.'
 }
 if (Test-Path $keyFile) {
-    $secure = Get-Content -Raw -Path $passwordFile | ConvertTo-SecureString
+    $secure = (Get-Content -Raw -Path $passwordFile).Trim() | ConvertTo-SecureString
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try { $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
@@ -78,6 +78,9 @@ if ($prior.Count -gt 0 -and $prior[0].value -ne $fingerprint) {
 $secretNames = @('ANDROIDOS_SIGNING_KEYSTORE_B64','ANDROIDOS_SIGNING_STORE_PASSWORD','ANDROIDOS_SIGNING_KEY_PASSWORD','ANDROIDOS_SIGNING_KEY_ALIAS')
 $present = @(& gh secret list -e $Environment -R $Repository --json name | ConvertFrom-Json | ForEach-Object { $_.name })
 Assert-Last 'Inspect existing protected secrets'
+if (@($present | Where-Object { $_ -in $secretNames }).Count -gt 0 -and $prior.Count -eq 0) {
+    throw 'Existing signing secrets have no certificate pin. Refusing to replace signing identity.'
+}
 if (@($present | Where-Object { $_ -in $secretNames }).Count -gt 0 -and @($present | Where-Object { $_ -in $secretNames }).Count -ne 4) {
     throw 'Partial GitHub signing secrets found. Refusing to overwrite; inspect manually.'
 }
