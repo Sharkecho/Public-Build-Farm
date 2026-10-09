@@ -39,6 +39,18 @@ jobs:
           Path("codingos-public-probe.json").write_text(json.dumps(result))
           print("CODINGOS_PUBLIC_RUNNER=PASS")
           PY
+      - name: Verify CI handoff contract without private source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("codingos-public-probe.json").read_text())
+          assert report["source"] == "public-safe-synthetic-only"
+          assert report["passed"] is True
+          print("CODINGOS_PUBLIC_HANDOFF=PASS")
+          PY
       - name: Upload non-secret probe evidence
         uses: actions/upload-artifact@v4
         with:
