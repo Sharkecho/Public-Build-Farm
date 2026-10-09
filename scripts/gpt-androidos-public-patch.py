@@ -83,7 +83,8 @@ def apply(root: Path, verify_only: bool) -> None:
     if not all(a in check for a in ALIASES) or NEW_LABEL not in label:
         raise RuntimeError("post-patch validation failed")
     print("GUI_AUDIO_ALIAS=PASS")
-    print("APP_NAME=GPT-AndroidOS")\n    print("AGENT_HOME_QUICK_CARDS=2")
+    print("APP_NAME=GPT-AndroidOS")
+    print("AGENT_HOME_QUICK_CARDS=2")
     print("REALTIME_AUDIO_UNCHANGED=YES")
     print("PRIVILEGED_AUDIO_BRIDGE=NOT_IMPLEMENTED")
 
