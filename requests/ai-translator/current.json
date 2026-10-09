@@ -1,8 +1,7 @@
 {
   "source_ref": "c6c1e9c0b13bfda750755f907b8c4a48fd677311",
-  "upload_apk": false,
+  "upload_apk": true,
   "build_only": true,
-  "requested_by": "Trustlyta M2 PR #33 integration",
-  "reason": "Independent debug APK compile for exact PR #33 source SHA; full UI gate remains separate"
+  "requested_by": "AI Translator M2 device validation",
+  "reason": "Private artifact delivery for Android on-device M2 tests; pinned to verified PR #33 source SHA; no production release"
 }
-
