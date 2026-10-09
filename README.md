@@ -42,6 +42,16 @@ Recommended `BUILD_FARM_SOURCE_TOKEN`:
 
 Account-level rules: `Sharkecho/Sharkecho/GLOBAL_BUILD_COMPUTE_POLICY.md`.
 
+## New project onboarding
+
+All approved projects use the same private-source flow described in
+[`docs/PROJECT_ONBOARDING.md`](docs/PROJECT_ONBOARDING.md). A project must remain
+in its own private source repository and receive an explicit fixed workflow in
+this repository. Copy
+[`docs/project-onboarding-request.example.md`](docs/project-onboarding-request.example.md)
+for each new project. “All projects” never means wildcard repository access or
+arbitrary shell execution.
+
 ## Private fallback
 
 The original private-repository workflows are retained as **manual fallback only** until each public build path is proven with a real successful run.
