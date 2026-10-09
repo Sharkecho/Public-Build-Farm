@@ -33,6 +33,22 @@ jobs:
           path: farm
           persist-credentials: false
 
+      - name: Resolve explicit public debug APK upload preference
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_UPLOAD_APK: ${{ inputs.upload_apk }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            value="$INPUT_UPLOAD_APK"
+          else
+            value="$(python3 -c 'import json; print(str(json.load(open("farm/requests/gpt-androidos/build.json")).get("upload_apk", False)).lower())')"
+          fi
+          case "$value" in true|false) ;; *) echo "Invalid upload_apk flag"; exit 2;; esac
+          echo "UPLOAD_APK=$value" >> "$GITHUB_ENV"
+          echo "PUBLIC_DEBUG_APK_UPLOAD=$value"
+
       - name: Checkout pinned public ClawGUI source
         uses: actions/checkout@v4
         with:
@@ -121,7 +137,7 @@ jobs:
             echo "- Patch: public GUI alias/label only, no audio native bridge"
             echo "- Android Debug APK: BUILD_VERIFIED"
             echo "- APK SHA-256: \`$(sha256sum "$apk" | cut -d ' ' -f 1)\`"
-            echo "- Public APK upload enabled: \`${{ inputs.upload_apk }}\`"
+            echo "- Public APK upload enabled: \`$UPLOAD_APK\`"
             echo "- On-device/ROM/iPhone integration: UNVERIFIED"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -133,7 +149,7 @@ jobs:
           retention-days: 3
 
       - name: Upload public debug APK only on explicit request
-        if: ${{ inputs.upload_apk }}
+        if: env.UPLOAD_APK == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: gpt-androidos-public-debug-apk
