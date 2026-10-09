@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: trustlyta-update-staging
+  cancel-in-progress: true
 jobs:
   build-unsigned:
     runs-on: ubuntu-22.04
