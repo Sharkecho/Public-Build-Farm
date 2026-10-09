@@ -13,6 +13,7 @@ Product/source repositories remain PRIVATE.
 | `Sharkecho/note9-liveos` | Samsung Note9 kernel | `ubuntu-22.04` |
 | `Sharkecho/ai-translator` | Flutter/Android APK validation build | `ubuntu-latest` | deployed · awaiting first real run |
 | `Sharkecho/CentoreOS` | Tauri/Rust Windows desktop build | `windows-latest` | deployed · awaiting first real run |
+| `Sharkecho/CodingOS-AgentCanvas` | React/TypeScript app and library validation | `ubuntu-22.04` | manual workflow |
 
 ## Security boundary
 
@@ -26,6 +27,7 @@ Product/source repositories remain PRIVATE.
 - Do not use paid Larger Runners.
 - Do not copy private source into this repository.
 - Only approved non-secret build outputs/manifests may be uploaded as public Actions artifacts.
+- New projects must be added as explicit fixed-repository workflows; never accept arbitrary repository or shell-command inputs.
 
 ## Source token permissions
 
