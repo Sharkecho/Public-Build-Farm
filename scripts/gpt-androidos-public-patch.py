@@ -47,7 +47,7 @@ def update_file(path: Path, old: str, new: str, verify_only: bool) -> None:
     if old not in data and new not in data:
         raise RuntimeError(f"upstream patch anchor missing: {path}")
     if new in data:
-        if old in data:
+        if old in data and old not in new:
             raise RuntimeError(f"ambiguous partial patch: {path}")
         return
     if data.count(old) != 1:
