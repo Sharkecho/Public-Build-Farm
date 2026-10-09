@@ -54,6 +54,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_SOURCE_REF: ${{ inputs.source_ref }}
           INPUT_UPLOAD_APK: ${{ inputs.upload_apk }}
+          INPUT_BUILD_ONLY: ${{ inputs.build_only }}
           DISPATCH_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
           DISPATCH_UPLOAD_APK: ${{ github.event.client_payload.upload_apk }}
         run: |
@@ -61,16 +62,20 @@ jobs:
           if [ "$EVENT_NAME" = "push" ]; then
             SOURCE_REF="$(python3 -c 'import json; print(json.load(open("build-farm/requests/ai-translator/current.json"))["source_ref"])')"
             UPLOAD_APK="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("upload_apk", False))).lower())')"
+            BUILD_ONLY="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("build_only", False))).lower())')"
           elif [ "$EVENT_NAME" = "repository_dispatch" ]; then
             SOURCE_REF="$DISPATCH_SOURCE_REF"
             UPLOAD_APK="${DISPATCH_UPLOAD_APK:-false}"
+            BUILD_ONLY=false
           else
             SOURCE_REF="${INPUT_SOURCE_REF:-main}"
             UPLOAD_APK="${INPUT_UPLOAD_APK:-false}"
+            BUILD_ONLY="${INPUT_BUILD_ONLY:-false}"
           fi
           test -n "$SOURCE_REF"
           echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
           echo "UPLOAD_APK=$UPLOAD_APK" >> "$GITHUB_ENV"
+          echo "BUILD_ONLY=$BUILD_ONLY" >> "$GITHUB_ENV"
 
       - name: Validate private source token is configured
         env:
@@ -110,7 +115,7 @@ jobs:
         run: flutter analyze
 
       - name: Run Flutter tests
-        if: github.event_name != 'workflow_dispatch' || (inputs.build_only != true && inputs.test_only != true)
+        if: env.BUILD_ONLY != 'true' && (github.event_name != 'workflow_dispatch' || inputs.test_only != true)
         working-directory: source/mobile
         run: flutter test
 
@@ -143,7 +148,7 @@ jobs:
             echo "- Source ref: `$SOURCE_REF`"
             echo "- Source SHA: `$SOURCE_SHA`"
             echo "- Flutter analyze: PASS"
-            if [ "${{ inputs.build_only }}" = "true" ]; then
+            if [ "$BUILD_ONLY" = "true" ]; then
               echo "- Flutter tests: NOT_RUN (explicit build-only request)"
             else
               echo "- Flutter tests: PASS"
@@ -193,3 +198,4 @@ jobs:
               message:`gate(android): record run ${context.runId}`,
               content:Buffer.from(JSON.stringify(report,null,2)+'\n').toString('base64')
             });
+
