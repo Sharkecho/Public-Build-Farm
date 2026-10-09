@@ -1,5 +1,5 @@
 {
-  "source_sha": "fd3b2c25ced15c35da0dee8d4136c0290e33d009",
-  "scope": "focused-widget-tests-no-android-emulator",
-  "apk_upload": false
+  "source_sha": "2c978acd46c243c1855a6ad2da1a44c104a46a29",
+  "test_scope": "startup_safe_mode_and_offline_diagnostics_v101",
+  "apk_publish": false
 }
