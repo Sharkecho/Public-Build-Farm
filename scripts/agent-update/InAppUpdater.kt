@@ -96,6 +96,11 @@ object InAppUpdater {
             val checksum = metadata.getString("sha256").lowercase()
             require(actualUrl == expectedUrl) { "升级包地址不在受信范围" }
             require(Regex("[0-9a-f]{64}").matches(checksum)) { "升级包校验值无效" }
+            val expectedSigner = metadata.optString("certificate_sha256").lowercase()
+            require(Regex("[0-9a-f]{64}").matches(expectedSigner)) { "升级清单缺少签名证书指纹" }
+            require(expectedSigner in signerFingerprints(context, null)) {
+                "新版本的签名与当前安装版不一致。首次从 Debug 版迁移时，请先备份配置并安装正式版。"
+            }
             Release(code, metadata.optString("version_name", tag).take(60), actualUrl, checksum)
         } finally {
             conn.disconnect()
