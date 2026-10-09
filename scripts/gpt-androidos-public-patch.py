@@ -44,7 +44,11 @@ def apply(root: Path, verify_only: bool) -> None:
     elif any(existing):
         raise RuntimeError("partially patched Apps.kt; refusing to write")
     else:
-        update_file(apps, ANCHOR, "\n".join(ALIASES) + "\n" + ANCHOR, verify_only)
+        if data.count(ANCHOR) != 1:
+            raise RuntimeError("upstream Apps.kt anchor not unique")
+        if verify_only:
+            raise RuntimeError("audio aliases not applied")
+        apps.write_text(data.replace(ANCHOR, "\n".join(ALIASES) + "\n" + ANCHOR, 1), encoding="utf-8")
     update_file(strings, OLD_LABEL, NEW_LABEL, verify_only)
     check = apps.read_text(encoding="utf-8")
     label = strings.read_text(encoding="utf-8")
