@@ -3,19 +3,18 @@ name: CodingOS Agent Canvas Build
 on:
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: Branch or full commit SHA in the approved CodingOS repository
+      source_sha:
+        description: Full 40-character commit SHA in the approved CodingOS repository
         required: true
-        default: codingos/main
         type: string
       test_scope:
         description: Verification scope
         required: true
-        default: smoke
+        default: targeted
         type: choice
         options:
-          - smoke
-          - full
+          - targeted
+          - extended
       publish_artifacts:
         description: Upload approved non-secret build metadata only
         required: true
@@ -26,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: codingos-agent-canvas-${{ inputs.source_ref }}
+  group: codingos-agent-canvas-${{ inputs.source_sha }}
   cancel-in-progress: false
 
 env:
@@ -42,23 +41,16 @@ jobs:
       - name: Validate approved ref
         shell: bash
         env:
-          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          if [[ ! "$SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-            echo "Invalid source_ref characters" >&2
-            exit 1
-          fi
-          if [[ "$SOURCE_REF" == /* || "$SOURCE_REF" == *..* || "$SOURCE_REF" == *$'\n'* ]]; then
-            echo "Invalid source_ref" >&2
-            exit 1
-          fi
+          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'source_sha must be a full commit SHA' >&2; exit 1; }
 
       - name: Checkout approved private source
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/CodingOS-AgentCanvas
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_sha }}
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           persist-credentials: false
           fetch-depth: 1
@@ -72,29 +64,46 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Record checked out SHA
+        id: checkout_sha
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          [[ "$ACTUAL_SHA" == "$SOURCE_SHA" ]] || { echo "Checkout SHA mismatch" >&2; exit 1; }
+          echo "actual_sha=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
+
       - name: Lint
         run: npm run lint
 
-      - name: Smoke build
-        if: inputs.test_scope == 'smoke'
+      - name: Targeted Vitest
+        id: targeted_tests
+        run: npm test -- --run --passWithNoTests __tests__/codingos
+
+      - name: Application build
+        id: app_build
         run: npm run build
 
-      - name: Full unit and library checks
-        if: inputs.test_scope == 'full'
-        run: |
-          npm test
-          npm run build
-          npm run build:lib
+      - name: Extended library build
+        id: library_build
+        if: inputs.test_scope == 'extended'
+        run: npm run build:lib
 
       - name: Write redacted build metadata
         if: always()
         shell: bash
         env:
-          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
           TEST_SCOPE: ${{ inputs.test_scope }}
           JOB_STATUS: ${{ job.status }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          ACTUAL_SHA: ${{ steps.checkout_sha.outputs.actual_sha }}
+          TARGETED_TESTS_OUTCOME: ${{ steps.targeted_tests.outcome }}
+          APP_BUILD_OUTCOME: ${{ steps.app_build.outcome }}
+          LIBRARY_BUILD_OUTCOME: ${{ steps.library_build.outcome }}
         run: |
           set -euo pipefail
           mkdir -p "$REPORT_DIR"
@@ -104,9 +113,13 @@ jobs:
           const report = {
             project: 'CodingOS-AgentCanvas',
             sourceRepository: 'Sharkecho/CodingOS-AgentCanvas',
-            sourceRef: process.env.SOURCE_REF,
+            requestedSourceSha: process.env.SOURCE_SHA,
+            actualSourceSha: process.env.ACTUAL_SHA,
             testScope: process.env.TEST_SCOPE,
             status: process.env.JOB_STATUS,
+            targetedTests: process.env.TARGETED_TESTS_OUTCOME,
+            appBuild: process.env.APP_BUILD_OUTCOME,
+            libraryBuild: process.env.LIBRARY_BUILD_OUTCOME,
             runId: process.env.RUN_ID,
             runAttempt: process.env.RUN_ATTEMPT,
           };
