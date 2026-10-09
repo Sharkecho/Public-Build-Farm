@@ -80,7 +80,7 @@ object InAppUpdater {
     suspend fun download(context: Context, release: Release): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "updates")
         check(dir.isDirectory || dir.mkdirs()) { "无法建立下载缓存" }
-        val temporary = File(dir, "next.apk.part")
+        val temporary = File(dir, "candidate.apk")
         val verified = File(dir, "next.apk")
         temporary.delete()
         val digest = MessageDigest.getInstance("SHA-256")
