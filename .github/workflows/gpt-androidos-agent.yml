@@ -8,6 +8,7 @@ on:
       - 'requests/gpt-androidos/build.json'
       - 'scripts/gpt-androidos-public-patch.py'
       - 'scripts/agent-update/**'
+      - 'tests/test_androidos_release_manifest.py'
   workflow_dispatch:
     inputs:
       upload_apk:
@@ -33,6 +34,12 @@ jobs:
         with:
           path: farm
           persist-credentials: false
+
+      - name: Test signed-release contract (no signing secrets)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s farm/tests -p test_androidos_release_manifest.py -v
 
       - name: Resolve explicit public debug APK upload preference
         shell: bash
