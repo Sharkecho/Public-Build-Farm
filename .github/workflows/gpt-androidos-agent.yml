@@ -1,6 +1,12 @@
 name: GPT-AndroidOS Agent Android Build
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gpt-androidos-agent.yml'
+      - 'requests/gpt-androidos/build.json'
+      - 'scripts/gpt-androidos-public-patch.py'
   workflow_dispatch:
     inputs:
       upload_apk:
@@ -60,13 +66,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK 36 and Build Tools
-        uses: android-actions/setup-android@v3
-      - name: Install build SDK
+      - name: Install Android SDK 36 using preinstalled runner tools
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          test -n "${ANDROID_HOME:-}"
+          command -v sdkmanager
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+          test -d "$ANDROID_HOME/platforms/android-36"
+          test -d "$ANDROID_HOME/build-tools/36.0.0"
 
       - name: Cache Gradle dependencies
         uses: gradle/actions/setup-gradle@v4
