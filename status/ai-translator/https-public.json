@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "gate": "trustlyta-public-https",
-  "run_id": 37865900950,
-  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37865900950",
+  "run_id": 37866146445,
+  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/37866146445",
   "target": "https://43-163-91-54.sslip.io/health",
   "result": "failure",
   "verified_pass": false,
-  "finished_at": "2026-10-09T00:40:09.590Z"
+  "finished_at": "2026-10-09T00:42:54.533Z"
 }
