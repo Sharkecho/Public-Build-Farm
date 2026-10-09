@@ -19,7 +19,7 @@ on:
         default: false
         type: boolean
       test_only:
-        description: "Run focused M2 audio tests without rebuilding an unchanged APK"
+        description: "Run Flutter analysis and integrated tests without building an APK"
         required: true
         default: false
         type: boolean
@@ -133,7 +133,6 @@ jobs:
         run: flutter pub get
 
       - name: Analyze Flutter project
-        if: env.TEST_ONLY != 'true'
         working-directory: source/mobile
         run: flutter analyze
 
@@ -142,13 +141,13 @@ jobs:
         working-directory: source/mobile
         run: flutter test
 
-      - name: Run focused M2 audio tests
+      - name: Run integrated Flutter tests without building
         if: env.TEST_ONLY == 'true'
         working-directory: source/mobile
         run: |
           set -euo pipefail
           echo "AI_TRANSLATOR_SOURCE_SHA=$(git rev-parse HEAD)"
-          flutter test test/controller_test.dart test/live_audio_services_test.dart test/sherpa_local_inference_runtime_test.dart test/tts_router_test.dart
+          flutter test
 
       - name: Build Android debug APK
         if: env.TEST_ONLY != 'true'
