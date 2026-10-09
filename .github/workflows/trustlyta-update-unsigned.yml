@@ -1,0 +1,64 @@
+name: Trustlyta Unsigned Release Staging
+on:
+  push:
+    paths:
+      - '.github/workflows/trustlyta-update-unsigned.yml'
+      - 'requests/ai-translator/update-build.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-unsigned:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: farm
+          persist-credentials: false
+      - name: Read immutable update build request
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SOURCE_SHA=$(python3 -c 'import json; print(json.load(open("farm/requests/ai-translator/update-build.json"))["source_sha"])')" >> "$GITHUB_ENV"
+          echo "REVIEW_BUILD_NUMBER=$(python3 -c 'import json; print(json.load(open("farm/requests/ai-translator/update-build.json"))["version_code"])')" >> "$GITHUB_ENV"
+      - name: Validate immutable source and version
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$REVIEW_BUILD_NUMBER" =~ ^[0-9]{1,7}$ ]]
+          test "$REVIEW_BUILD_NUMBER" -ge 100
+      - uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/ai-translator
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Full Flutter regression and unsigned release compile
+        working-directory: source/mobile
+        env:
+          TRUSTLYTA_UNSIGNED_UPDATE: 'true'
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter analyze
+          flutter test
+          flutter build apk --release --build-number="$REVIEW_BUILD_NUMBER" --dart-define=API_BASE_URL=https://43-163-91-54.sslip.io
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          sha256sum build/app/outputs/flutter-apk/app-release.apk >> "$GITHUB_STEP_SUMMARY"
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "UNSIGNED_VERSION_CODE=$REVIEW_BUILD_NUMBER" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trustlyta-unsigned-update-v${{ env.REVIEW_BUILD_NUMBER }}
+          path: source/mobile/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 2
+          if-no-files-found: error
