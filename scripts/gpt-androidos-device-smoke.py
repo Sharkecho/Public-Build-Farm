@@ -73,7 +73,7 @@ def capture_ui_evidence(adb: str, serial: str, output_dir: Path) -> dict:
                            capture_output=True, check=False, timeout=40)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise DeviceError("Screenshot ADB command failed") from exc
-    if p.returncode or not p.stdout.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+    if p.returncode or not p.stdout.startswith(bytes.fromhex("89504e470d0a1a0a")):
         raise DeviceError("Screenshot failed or is not PNG")
     image = output_dir / "agent-screen.png"
     image.write_bytes(p.stdout)
