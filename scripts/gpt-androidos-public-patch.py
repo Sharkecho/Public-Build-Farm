@@ -156,6 +156,19 @@ private fun InAppUpdateCard() {
                 '        InfoCard("开源协议 Apache-2.0 · 仓库:github.com/ZJU-REAL/ClawGUI")\n        InAppUpdateCard()',
                 verify_only)
 
+    update_file(settings, 'SettingsRowSpec("关于", "版本、协议、项目",',
+                'SettingsRowSpec("关于与在线升级", "检查更新、版本和协议",', verify_only)
+    update_file(settings, 'data object About : SettingsPage("关于")',
+                'data object About : SettingsPage("关于与在线升级")', verify_only)
+    update_file(settings, 'Text("ClawGUI", style = MaterialTheme.typography.titleLarge,',
+                'Text("GPT-AndroidOS", style = MaterialTheme.typography.titleLarge,', verify_only)
+    update_file(settings, 'Text("v0.2.0 · NG", style = MaterialTheme.typography.labelMedium,',
+                'Text("v${com.clawgui.ng.BuildConfig.VERSION_NAME} · Android Agent", style = MaterialTheme.typography.labelMedium,', verify_only)
+    update_file(settings, 'Text("ClawGUI · NG", style = MaterialTheme.typography.headlineSmall)',
+                'Text("GPT-AndroidOS", style = MaterialTheme.typography.headlineSmall)', verify_only)
+    update_file(settings, 'Text("版本 0.2.0", style = MaterialTheme.typography.bodyMedium,',
+                'Text("版本 ${com.clawgui.ng.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium,', verify_only)
+
     manifest = root / "app/src/main/AndroidManifest.xml"
     update_file(manifest,
                 '    <uses-permission android:name="android.permission.INTERNET" />',
