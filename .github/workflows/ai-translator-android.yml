@@ -18,6 +18,11 @@ on:
         required: true
         default: false
         type: boolean
+      test_only:
+        description: "Run focused M2 audio tests without rebuilding an unchanged APK"
+        required: true
+        default: false
+        type: boolean
   repository_dispatch:
     types: [ai-translator-android]
   push:
@@ -100,19 +105,30 @@ jobs:
         run: flutter pub get
 
       - name: Analyze Flutter project
+        if: github.event_name != 'workflow_dispatch' || inputs.test_only != true
         working-directory: source/mobile
         run: flutter analyze
 
       - name: Run Flutter tests
-        if: github.event_name != 'workflow_dispatch' || inputs.build_only != true
+        if: github.event_name != 'workflow_dispatch' || (inputs.build_only != true && inputs.test_only != true)
         working-directory: source/mobile
         run: flutter test
 
+      - name: Run focused M2 audio tests
+        if: github.event_name == 'workflow_dispatch' && inputs.test_only == true
+        working-directory: source/mobile
+        run: |
+          set -euo pipefail
+          echo "AI_TRANSLATOR_SOURCE_SHA=$(git rev-parse HEAD)"
+          flutter test test/controller_test.dart test/live_audio_services_test.dart test/sherpa_local_inference_runtime_test.dart test/tts_router_test.dart
+
       - name: Build Android debug APK
+        if: github.event_name != 'workflow_dispatch' || inputs.test_only != true
         working-directory: source/mobile
         run: flutter build apk --debug
 
       - name: Record build evidence
+        if: github.event_name != 'workflow_dispatch' || inputs.test_only != true
         working-directory: source
         run: |
           set -euo pipefail
@@ -137,7 +153,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload debug APK only when explicitly requested
-        if: env.UPLOAD_APK == 'true'
+        if: env.UPLOAD_APK == 'true' && (github.event_name != 'workflow_dispatch' || inputs.test_only != true)
         uses: actions/upload-artifact@v4
         with:
           name: ai-translator-debug-apk
@@ -147,7 +163,7 @@ jobs:
 
   report-status:
     needs: [validate]
-    if: ${{ always() }}
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.test_only != true) }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
