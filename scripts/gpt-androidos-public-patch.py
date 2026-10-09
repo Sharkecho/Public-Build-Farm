@@ -57,7 +57,7 @@ def update_file(path: Path, old: str, new: str, verify_only: bool) -> None:
     path.write_text(data.replace(old, new, 1), encoding="utf-8")
 
 
-def apply(root: Path, verify_only: bool, version_code: int = 2) -> None:
+def apply(root: Path, verify_only: bool, version_code: int = 3) -> None:
     if not (2 <= version_code <= 999999999):
         raise RuntimeError('version-code out of supported range')
     apps = root / "app/src/main/kotlin/com/clawgui/ng/runtime/phone/config/Apps.kt"
@@ -225,7 +225,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--verify-only", action="store_true")
-    parser.add_argument("--version-code", type=int, default=2)
+    parser.add_argument("--version-code", type=int, default=3)
     args = parser.parse_args()
     apply(args.source, args.verify_only, args.version_code)
 
