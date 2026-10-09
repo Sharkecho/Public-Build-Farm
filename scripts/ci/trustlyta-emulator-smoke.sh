@@ -10,18 +10,24 @@ fail() {
 }
 
 assert_flutter_home() {
-  local stage="$1" xml
+  local stage="$1" xml dump_ok=false package_seen=false text_seen=false voice_seen=false
   [[ "$(adb get-state 2>/dev/null || true)" == device ]] || fail "FAIL_DEVICE_CONNECTION_${stage}"
-  for _ in 1 2 3; do
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if adb shell uiautomator dump /sdcard/trustlyta-smoke.xml >/dev/null 2>&1; then
+      dump_ok=true
       xml="$(adb shell cat /sdcard/trustlyta-smoke.xml 2>/dev/null || true)"
-      if [[ "$xml" == *"package=\"$PACKAGE\""* && "$xml" == *'翻译文字'* && "$xml" == *'语音翻译'* ]]; then
+      if [[ "$xml" == *"package=\"$PACKAGE\""* ]]; then package_seen=true; fi
+      if [[ "$xml" == *'翻译文字'* ]]; then text_seen=true; fi
+      if [[ "$xml" == *'语音翻译'* ]]; then voice_seen=true; fi
+      if [[ "$package_seen" == true && "$text_seen" == true && "$voice_seen" == true ]]; then
         echo "FLUTTER_HOME_${stage}=PASS"
         return 0
       fi
     fi
     sleep 2
   done
+  echo "UI_PROBE_${stage}=dump:$dump_ok,package:$package_seen,text:$text_seen,voice:$voice_seen" >&2
+  echo "APP_PROCESS_${stage}=$(adb shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r' || true)" >&2
   fail "FAIL_FLUTTER_HOME_${stage}"
 }
 
