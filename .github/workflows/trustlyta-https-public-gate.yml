@@ -24,8 +24,21 @@ jobs:
           actual="$(getent ahostsv4 "$host" | awk 'NR==1 {print $1}')"
           test "$actual" = "$ip" || { echo "DNS_GATE=FAIL"; exit 1; }
           echo "DNS_GATE=PASS"
-          curl --fail --show-error --silent --location --max-time 20 --proto '=https' --tlsv1.2 "https://$host/health" | head -c 200
-          echo
+          # Distinguish public port reachability from TLS/certificate errors.
+          # Report only safe diagnostic categories, never print response contents.
+          if timeout 8 bash -c 'echo >/dev/tcp/43.163.91.54/443' 2>/dev/null; then
+            echo "TCP_443=OPEN"
+          else
+            echo "TCP_443=UNREACHABLE_OR_FILTERED"
+            exit 21
+          fi
+          if timeout 8 bash -c 'echo >/dev/tcp/43.163.91.54/80' 2>/dev/null; then
+            echo "TCP_80=OPEN"
+          else
+            echo "TCP_80=UNREACHABLE_OR_FILTERED"
+          fi
+          code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --connect-timeout 7 --max-time 20 --proto '=https' --tlsv1.2 "https://$host/health")"
+          test "$code" = 200 || { echo "HTTPS_HEALTH_HTTP_STATUS=$code"; exit 22; }
           echo "HTTPS_PUBLIC_GATE=PASS"
   report:
     needs: [verify]
