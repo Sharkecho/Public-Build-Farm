@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       version_code:
-        description: "Increasing Android versionCode (first stable = 2)"
+        description: "Increasing Android versionCode (first stable = 3)"
         type: number
         required: true
-        default: 2
+        default: 3
       confirm_public_release:
         description: "I approve publishing this PUBLIC ClawGUI-only Agent APK"
         type: boolean
