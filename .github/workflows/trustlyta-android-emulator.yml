@@ -89,18 +89,8 @@ jobs:
           emulator-boot-timeout: 900
           disable-spellchecker: true
           script: |
-            set -eu
-            adb install -r source/mobile/build/app/outputs/flutter-apk/app-release.apk
-            adb logcat -c -b crash
-            adb shell am start -W -n com.sharkecho.ai_translator/.MainActivity
-            sleep 15
-            adb shell pidof com.sharkecho.ai_translator >/dev/null
-            adb shell dumpsys activity activities | grep -q 'com.sharkecho.ai_translator'
-            if adb logcat -d -b crash | grep -Eq 'FATAL EXCEPTION|Fatal signal'; then
-              adb logcat -d -b crash -v threadtime | tail -160
-              exit 1
-            fi
-            echo 'EMULATOR_INSTALL_LAUNCH_SMOKE=PASS'
+            bash -n farm/scripts/ci/trustlyta-emulator-smoke.sh
+            bash farm/scripts/ci/trustlyta-emulator-smoke.sh
       - name: Public-safe summary
         if: always()
         run: |
