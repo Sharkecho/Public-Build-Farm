@@ -4,6 +4,7 @@ on:
     paths:
       - 'requests/ai-translator/emulator.json'
       - '.github/workflows/trustlyta-android-emulator.yml'
+      - 'scripts/ci/trustlyta-emulator-smoke.sh'
   workflow_dispatch:
 permissions:
   contents: read
