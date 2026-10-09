@@ -1,9 +1,10 @@
 {
   "schema_version": 1,
   "build": "gpt-androidos-agent-public-mvp",
-  "request_id": "sdk-fix-20261009-01",
+  "request_id": "android-agent-ui-smoke-apk-20261009",
   "source_repo": "ZJU-REAL/ClawGUI",
   "source_sha": "d990d3e3f2390ced708771d9681d3c4f9a6cbef5",
-  "artifact_upload": "disabled-by-default",
-  "goal": "verify SDK fix and Gradle compilation; public-source-only"
+  "artifact_upload": "public-opt-in-for-open-source-debug-apk",
+  "goal": "Build the public-source GUI MVP APK with Audio/Device quick cards for physical Android GUI smoke testing. Contains no private model or ROM source.",
+  "upload_apk": true
 }
