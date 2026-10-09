@@ -1,0 +1,33 @@
+name: Trustlyta M2 Temporary Public APK Cleanup
+on:
+  push:
+    paths:
+      - '.github/workflows/trustlyta-m2-artifact-cleanup.yml'
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+jobs:
+  delete-only-verified-migrated-artifact:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            // The exact review APK has already been uploaded and verified
+            // in private Sharkecho/ai-translator release tag
+            // trustlyta-m2-review-37875535736.
+            const owner=context.repo.owner,repo=context.repo.repo;
+            const artifact_id=11592670791;
+            let a;
+            try {
+              a=(await github.rest.actions.getArtifact({owner,repo,artifact_id})).data;
+            } catch(e) {
+              if(e.status===404){core.info('PUBLIC_APK_ALREADY_REMOVED=PASS');return;}
+              throw e;
+            }
+            if(a.name!=='ai-translator-debug-apk'||a.workflow_run?.id!==37875535736)
+              throw new Error('Artifact identity mismatch; refusing removal');
+            await github.rest.actions.deleteArtifact({owner,repo,artifact_id});
+            core.info('PUBLIC_TEMPORARY_APK_REMOVED=PASS');
