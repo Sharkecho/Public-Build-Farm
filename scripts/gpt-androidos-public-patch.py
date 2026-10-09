@@ -57,7 +57,9 @@ def update_file(path: Path, old: str, new: str, verify_only: bool) -> None:
     path.write_text(data.replace(old, new, 1), encoding="utf-8")
 
 
-def apply(root: Path, verify_only: bool) -> None:
+def apply(root: Path, verify_only: bool, version_code: int = 2) -> None:
+    if not (2 <= version_code <= 999999999):
+        raise RuntimeError('version-code out of supported range')
     apps = root / "app/src/main/kotlin/com/clawgui/ng/runtime/phone/config/Apps.kt"
     strings = root / "app/src/main/res/values/strings.xml"
     data = apps.read_text(encoding="utf-8")
@@ -176,8 +178,8 @@ private fun InAppUpdateCard() {
         updater_file.write_bytes(expected)
 
     gradle = root / "app/build.gradle.kts"
-    update_file(gradle, 'versionCode = 1', 'versionCode = 2', verify_only)
-    update_file(gradle, 'versionName = "0.2.0"', 'versionName = "0.2.0-gpt.2"', verify_only)
+    update_file(gradle, 'versionCode = 1', f'versionCode = {version_code}', verify_only)
+    update_file(gradle, 'versionName = "0.2.0"', f'versionName = "0.2.0-gpt.{version_code}"', verify_only)
 
     check = apps.read_text(encoding="utf-8")
     label = strings.read_text(encoding="utf-8")
@@ -195,8 +197,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--version-code", type=int, default=2)
     args = parser.parse_args()
-    apply(args.source, args.verify_only)
+    apply(args.source, args.verify_only, args.version_code)
 
 
 if __name__ == "__main__":
