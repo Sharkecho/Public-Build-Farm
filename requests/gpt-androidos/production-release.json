@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "product": "GPT-AndroidOS",
+  "channel": "production",
+  "request_id": "androidos-first-fixed-signature-v3-20261009",
+  "version_code": 3,
+  "requires_environment": "androidos-production",
+  "note": "First fixed-certificate signed production APK. Protected environment approval and signing secrets are mandatory; no debug key fallback."
+}
