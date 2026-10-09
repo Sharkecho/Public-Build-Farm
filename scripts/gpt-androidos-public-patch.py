@@ -169,6 +169,21 @@ private fun InAppUpdateCard() {
     update_file(settings, 'Text("版本 0.2.0", style = MaterialTheme.typography.bodyMedium,',
                 'Text("版本 ${com.clawgui.ng.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium,', verify_only)
 
+
+    # ClawGUI upstream conflates "Shizuku permission granted" with "Shizuku installed".
+    # Without permission bindService() returned before requesting it.  Keep the
+    # normal Android/Shizuku user-consent dialog and bind only after approval.
+    controller = root / "app/src/main/kotlin/com/clawgui/ng/runtime/shizuku/DeviceController.kt"
+    update_file(controller, "    fun bindService() {\n        if (!isShizukuAvailable()) {\n            println(\"[DeviceController] Shizuku not available\")\n            return\n        }\n        try {\n            Shizuku.bindUserService(userServiceArgs, serviceConnection)\n        } catch (e: Exception) {\n            e.printStackTrace()\n        }\n    }", "    private var shizukuPermissionPending = false\n\n    fun bindService() {\n        if (!isShizukuAvailable()) {\n            println(\"[DeviceController] Shizuku server is not running\")\n            return\n        }\n        try {\n            if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {\n                if (shizukuPermissionPending) return\n                shizukuPermissionPending = true\n                val listener = object : Shizuku.OnRequestPermissionResultListener {\n                    override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {\n                        if (requestCode != 9101) return\n                        shizukuPermissionPending = false\n                        Shizuku.removeRequestPermissionResultListener(this)\n                        if (grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {\n                            bindService()\n                        }\n                    }\n                }\n                Shizuku.addRequestPermissionResultListener(listener)\n                try {\n                    Shizuku.requestPermission(9101)\n                } catch (e: Exception) {\n                    shizukuPermissionPending = false\n                    Shizuku.removeRequestPermissionResultListener(listener)\n                    throw e\n                }\n                return\n            }\n            Shizuku.bindUserService(userServiceArgs, serviceConnection)\n        } catch (e: Exception) {\n            e.printStackTrace()\n        }\n    }", verify_only)
+    update_file(controller, "    fun isShizukuAvailable(): Boolean {\n        return try {\n            Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED\n        } catch (e: Exception) {\n            false\n        }\n    }", "    fun isShizukuAvailable(): Boolean {\n        return try {\n            Shizuku.pingBinder()\n        } catch (e: Exception) {\n            false\n        }\n    }", verify_only)
+
+    # Status labels reflect server availability (not package-install visibility).
+    update_file(settings, "badge = if (installed) \"已检测到 App\" else null,", "badge = if (installed) \"Shizuku 服务已启动\" else null,", verify_only)
+    update_file(settings, "installed -> \"Shizuku App 已装,但 ClawGUI 还没拿到授权\"", "installed -> \"Shizuku 服务正在运行，请点击下方按钮申请授权\"", verify_only)
+    update_file(settings, "else -> \"未检测到 Shizuku App\"", "else -> \"未连接 Shizuku 服务，请先在 Shizuku App 中启动服务\"", verify_only)
+    update_file(settings, "                            runCatching { RuntimeContainer.device.bindService() }\n                            pollShizukuReady(timeoutMs = 3000L)", "                            runCatching { RuntimeContainer.device.bindService() }\n                            pollShizukuReady(timeoutMs = 15000L)", verify_only)
+    update_file(settings, "                        runCatching { RuntimeContainer.device.bindService() }\n                        pollShizukuReady(timeoutMs = 3000L)", "                        runCatching { RuntimeContainer.device.bindService() }\n                        pollShizukuReady(timeoutMs = 15000L)", verify_only)
+
     manifest = root / "app/src/main/AndroidManifest.xml"
     update_file(manifest,
                 '    <uses-permission android:name="android.permission.INTERNET" />',
