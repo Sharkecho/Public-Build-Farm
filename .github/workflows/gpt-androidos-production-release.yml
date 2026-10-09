@@ -66,6 +66,16 @@ jobs:
           test "$(git -C upstream rev-parse HEAD)" = "d990d3e3f2390ced708771d9681d3c4f9a6cbef5"
           python3 farm/scripts/gpt-androidos-public-patch.py --source upstream/clawgui-app --version-code "$VERSION_CODE"
           python3 farm/scripts/gpt-androidos-public-patch.py --source upstream/clawgui-app --version-code "$VERSION_CODE" --verify-only
+          # Upstream maps release -> ephemeral debug signing. Remove exactly
+          # that one assignment; only the protected signing step may sign.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("upstream/clawgui-app/app/build.gradle.kts")
+          source = p.read_text(encoding="utf-8")
+          old = '            signingConfig = signingConfigs.getByName("debug")'
+          assert source.count(old) == 1, "Upstream release signing configuration changed"
+          p.write_text(source.replace(old, '            // Unsigned production output; signed in protected release step', 1), encoding="utf-8")
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
