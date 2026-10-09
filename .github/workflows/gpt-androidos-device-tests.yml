@@ -1,0 +1,27 @@
+name: GPT-AndroidOS Device Relay Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gpt-androidos-device-tests.yml'
+      - 'scripts/gpt-androidos-device-smoke.py'
+      - 'scripts/tests/test_gpt_androidos_device_smoke.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mock-adb-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test device relay without connecting to real phone
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_gpt_androidos_device_smoke.py' -v
