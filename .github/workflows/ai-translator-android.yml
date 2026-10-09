@@ -1,0 +1,169 @@
+name: AI Translator Android Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private ai-translator branch/tag/SHA to validate"
+        required: true
+        default: "main"
+        type: string
+      upload_apk:
+        description: "Explicitly publish the debug APK artifact"
+        required: true
+        default: false
+        type: boolean
+  repository_dispatch:
+    types: [ai-translator-android]
+  push:
+    paths:
+      - "requests/ai-translator/current.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-translator-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout build request
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          path: build-farm
+          fetch-depth: 1
+
+      - name: Resolve source ref and artifact policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+          INPUT_UPLOAD_APK: ${{ inputs.upload_apk }}
+          DISPATCH_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
+          DISPATCH_UPLOAD_APK: ${{ github.event.client_payload.upload_apk }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            SOURCE_REF="$(python3 -c 'import json; print(json.load(open("build-farm/requests/ai-translator/current.json"))["source_ref"])')"
+            UPLOAD_APK="$(python3 -c 'import json; print(str(bool(json.load(open("build-farm/requests/ai-translator/current.json")).get("upload_apk", False))).lower())')"
+          elif [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            SOURCE_REF="$DISPATCH_SOURCE_REF"
+            UPLOAD_APK="${DISPATCH_UPLOAD_APK:-false}"
+          else
+            SOURCE_REF="${INPUT_SOURCE_REF:-main}"
+            UPLOAD_APK="${INPUT_UPLOAD_APK:-false}"
+          fi
+          test -n "$SOURCE_REF"
+          echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
+          echo "UPLOAD_APK=$UPLOAD_APK" >> "$GITHUB_ENV"
+
+      - name: Validate private source token is configured
+        env:
+          BUILD_FARM_SOURCE_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_FARM_SOURCE_TOKEN"
+
+      - name: Checkout private AI Translator source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/ai-translator
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Resolve Flutter dependencies
+        working-directory: source/mobile
+        run: flutter pub get
+
+      - name: Analyze Flutter project
+        working-directory: source/mobile
+        run: flutter analyze
+
+      - name: Run Flutter tests
+        working-directory: source/mobile
+        run: flutter test
+
+      - name: Build Android debug APK
+        working-directory: source/mobile
+        run: flutter build apk --debug
+
+      - name: Record build evidence
+        working-directory: source
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          APK="mobile/build/app/outputs/flutter-apk/app-debug.apk"
+          test -f "$APK"
+          echo "AI_TRANSLATOR_SOURCE_SHA=$SOURCE_SHA"
+          sha256sum "$APK"
+          {
+            echo "## AI Translator Android validation"
+            echo
+            echo "- Source ref: `$SOURCE_REF`"
+            echo "- Source SHA: `$SOURCE_SHA`"
+            echo "- Flutter analyze: PASS"
+            echo "- Flutter tests: PASS"
+            echo "- Android debug build: PASS"
+            echo "- APK uploaded: $UPLOAD_APK"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload debug APK only when explicitly requested
+        if: env.UPLOAD_APK == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-translator-debug-apk
+          path: source/mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 3
+
+  report-status:
+    needs: [validate]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish sanitized Android gate result
+        uses: actions/github-script@v7
+        env:
+          VALIDATION_RESULT: ${{ needs.validate.result }}
+        with:
+          script: |
+            const owner=context.repo.owner, repo=context.repo.repo;
+            const path='status/ai-translator/android-build.json';
+            const result=process.env.VALIDATION_RESULT;
+            const report={
+              schema_version:1, gate:'trustlyta-android-build',
+              run_id:context.runId,
+              run_url:`https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+              finished_at:new Date().toISOString(),
+              result, verified_pass:result==='success',
+              source_request_note:'See immutable source revision in workflow run'
+            };
+            let sha;
+            try { sha=(await github.rest.repos.getContent({owner,repo,path})).data.sha; }
+            catch(e) { if(e.status!==404) throw e; }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,repo,path,sha,
+              message:`gate(android): record run ${context.runId}`,
+              content:Buffer.from(JSON.stringify(report,null,2)+'\n').toString('base64')
+            });

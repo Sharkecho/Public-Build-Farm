@@ -1,0 +1,156 @@
+name: AI Translator M2 Real Speech Models
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private ai-translator commit SHA or branch"
+        required: true
+        default: "m2/real-vad-streaming-asr-assets-20261008"
+        type: string
+  push:
+    paths:
+      - 'requests/ai-translator/m2-speech.json'
+      - '.github/workflows/ai-translator-m2-speech.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ai-translator-m2-speech
+  cancel-in-progress: true
+jobs:
+  offline-model-manifest:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: farm
+          persist-credentials: false
+      - name: Resolve private source revision
+        env:
+          INPUT_REF: ${{ inputs.source_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_REF="${INPUT_REF:-$(python3 -c 'import json; print(json.load(open("farm/requests/ai-translator/m2-speech.json"))["source_ref"])')}"
+          test -n "$SOURCE_REF"
+          echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
+      - name: Check read-only source token
+        env:
+          SOURCE_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        run: test -n "$SOURCE_TOKEN"
+      - uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/ai-translator
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+      - name: Offline manifest and file integrity tests
+        working-directory: source
+        run: |
+          python3 -m py_compile scripts/prepare_m2_speech_models.py scripts/smoke_m2_speech_models.py
+          python3 -m unittest discover -s tests -p test_m2_model_acquisition.py -v
+          python3 -m unittest discover -s tests -p test_m2_audio_security_stress.py -v
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          obj = json.loads(Path("models/m2_vad_streaming_asr.json").read_text())
+          assert obj["activation"]["default"] == "disabled"
+          assert len(obj["assets"]) == 2
+          assert {x["kind"] for x in obj["assets"]} == {"vad", "streaming_asr"}
+          print("M2_MANIFEST=PASS")
+          PY
+  real-onnx-cpu:
+    needs: offline-model-manifest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: farm
+          persist-credentials: false
+      - name: Resolve source ref
+        env:
+          INPUT_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          SOURCE_REF="${INPUT_REF:-$(python3 -c 'import json; print(json.load(open("farm/requests/ai-translator/m2-speech.json"))["source_ref"])')}"
+          test -n "$SOURCE_REF"
+          echo "SOURCE_REF=$SOURCE_REF" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/ai-translator
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install actual sherpa-onnx runtime
+        run: python -m pip install --disable-pip-version-check 'sherpa-onnx>=1.10,<2' 'numpy<3'
+      - name: Acquire model assets with recorded SHA256
+        working-directory: source
+        run: python scripts/prepare_m2_speech_models.py
+      - name: Test actual Silero VAD and streaming Zipformer
+        working-directory: source
+        run: |
+          python scripts/smoke_m2_speech_models.py > /tmp/m2-speech.log 2>&1 || { echo 'M2_REAL_INFERENCE=FAIL'; tail -n 25 /tmp/m2-speech.log; exit 1; }
+          grep -q 'SILERO_VAD_REAL_INFERENCE=PASS' /tmp/m2-speech.log
+          grep -q 'ZIPFORMER_STREAMING_ASR_REAL_INFERENCE=PASS' /tmp/m2-speech.log
+          echo 'M2_REAL_INFERENCE=PASS'
+      - name: Publish non-sensitive validation summary
+        if: always()
+        run: |
+          echo 'M2 real speech verification: see step results.' >> "$GITHUB_STEP_SUMMARY"
+
+  gate-status:
+    name: Publish safe M2 gate status
+    needs: [offline-model-manifest, real-onnx-cpu]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - name: Update public status pointer (no private output or logs)
+        uses: actions/github-script@v7
+        env:
+          MANIFEST_RESULT: ${{ needs.offline-model-manifest.result }}
+          INFERENCE_RESULT: ${{ needs.real-onnx-cpu.result }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const path = 'status/ai-translator/m2-speech.json';
+            const manifest = process.env.MANIFEST_RESULT;
+            const inference = process.env.INFERENCE_RESULT;
+            const allPass = manifest === 'success' && inference === 'success';
+            const report = {
+              schema_version: 1,
+              gate: 'm2-real-speech',
+              run_id: context.runId,
+              run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+              workflow: context.workflow,
+              run_url: `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+              public_farm_commit: context.sha,
+              finished_at: new Date().toISOString(),
+              offline_model_manifest: manifest,
+              real_onnx_cpu: inference,
+              verified_pass: allPass
+            };
+            let sha;
+            try {
+              const old = await github.rest.repos.getContent({owner, repo, path});
+              sha = old.data.sha;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner, repo, path, sha,
+              message: `gate(m2): publish public real-speech result for run ${context.runId}`,
+              content: Buffer.from(JSON.stringify(report, null, 2) + '\n').toString('base64')
+            });
+            core.summary.addHeading('M2 gate visibility')
+              .addRaw(`Public status: ${path}. Manifest=${manifest}, real ONNX=${inference}`)
+              .write();

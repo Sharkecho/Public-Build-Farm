@@ -1,0 +1,6 @@
+{
+  "source_ref": "d4a58dc489e23e0ddcd02dafc352683bddc7eecd",
+  "upload_apk": false,
+  "requested_by": "Trustlyta M2 Android verification",
+  "reason": "Trustlyta Android background updater compile, widget and APK compatibility regression before signed review build"
+}
