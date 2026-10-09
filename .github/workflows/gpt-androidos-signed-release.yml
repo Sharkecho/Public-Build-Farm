@@ -1,0 +1,193 @@
+name: GPT-AndroidOS Signed Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: "Increasing Android versionCode (first stable = 2)"
+        type: number
+        required: true
+        default: 2
+      confirm_public_release:
+        description: "I approve publishing this PUBLIC ClawGUI-only Agent APK"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gpt-androidos-signed-release
+  cancel-in-progress: false
+
+jobs:
+  signed-release:
+    if: ${{ inputs.confirm_public_release }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout public build farm
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: farm
+
+      - name: Validate increasing version and private signing configuration
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version_code }}
+          KEYSTORE_B64: ${{ secrets.GPT_ANDROIDOS_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.GPT_ANDROIDOS_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.GPT_ANDROIDOS_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.GPT_ANDROIDOS_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo 'Invalid version'; exit 2; }
+          test "$VERSION" -ge 2
+          test "$VERSION" -le 999999999
+          previous="$(python3 -c 'import json; print(json.load(open("farm/updates/gpt-androidos/stable.json"))["version_code"])')"
+          test "$VERSION" -gt "$previous" || { echo 'Version must increase'; exit 2; }
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo 'Missing fixed Android signing secrets. Configure four GPT_ANDROIDOS_* secrets before publishing.'
+            exit 2
+          fi
+          echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/gpt-androidos-release.jks"
+          chmod 600 "$RUNNER_TEMP/gpt-androidos-release.jks"
+          test -s "$RUNNER_TEMP/gpt-androidos-release.jks"
+          {
+            echo "VERSION_CODE=$VERSION"
+            echo "GPT_ANDROIDOS_KEYSTORE_FILE=$RUNNER_TEMP/gpt-androidos-release.jks"
+          } >> "$GITHUB_ENV"
+
+      - name: Checkout pinned public ClawGUI source
+        uses: actions/checkout@v4
+        with:
+          repository: ZJU-REAL/ClawGUI
+          ref: d990d3e3f2390ced708771d9681d3c4f9a6cbef5
+          path: upstream
+          sparse-checkout: clawgui-app
+          persist-credentials: false
+
+      - name: Apply versioned public features
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 farm/scripts/gpt-androidos-public-patch.py --source upstream/clawgui-app --version-code "$VERSION_CODE"
+          python3 farm/scripts/gpt-androidos-public-patch.py --source upstream/clawgui-app --version-code "$VERSION_CODE" --verify-only
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkroot="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          mkdir -p "$sdkroot/cmdline-tools"
+          manager="$(find "$sdkroot/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | sort -V | tail -n 1 || true)"
+          if [ -z "$manager" ]; then
+            curl -fsSL --retry 3 --connect-timeout 20 -o "$RUNNER_TEMP/android-cmdline.zip" "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q "$RUNNER_TEMP/android-cmdline.zip" -d "$RUNNER_TEMP"
+            mv "$RUNNER_TEMP/cmdline-tools" "$sdkroot/cmdline-tools/latest"
+            manager="$sdkroot/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_HOME=$sdkroot" >> "$GITHUB_ENV"
+          yes | "$manager" --sdk_root="$sdkroot" --licenses >/dev/null || test "${PIPESTATUS[1]}" -eq 0
+          "$manager" --sdk_root="$sdkroot" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Inject release-only long-term signing configuration
+        shell: bash
+        env:
+          GPT_ANDROIDOS_STORE_PASSWORD: ${{ secrets.GPT_ANDROIDOS_STORE_PASSWORD }}
+          GPT_ANDROIDOS_KEY_ALIAS: ${{ secrets.GPT_ANDROIDOS_KEY_ALIAS }}
+          GPT_ANDROIDOS_KEY_PASSWORD: ${{ secrets.GPT_ANDROIDOS_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cat >> upstream/clawgui-app/app/build.gradle.kts <<'KOTLIN'
+          
+          // Public-farm release build only. Credentials come from GitHub Actions secrets.
+          android {
+              signingConfigs {
+                  create("gptStableRelease") {
+                      storeFile = file(System.getenv("GPT_ANDROIDOS_KEYSTORE_FILE"))
+                      storePassword = System.getenv("GPT_ANDROIDOS_STORE_PASSWORD")
+                      keyAlias = System.getenv("GPT_ANDROIDOS_KEY_ALIAS")
+                      keyPassword = System.getenv("GPT_ANDROIDOS_KEY_PASSWORD")
+                  }
+              }
+              buildTypes.getByName("release").signingConfig = signingConfigs.getByName("gptStableRelease")
+          }
+          KOTLIN
+
+      - name: Compile signed release APK
+        shell: bash
+        env:
+          GPT_ANDROIDOS_STORE_PASSWORD: ${{ secrets.GPT_ANDROIDOS_STORE_PASSWORD }}
+          GPT_ANDROIDOS_KEY_ALIAS: ${{ secrets.GPT_ANDROIDOS_KEY_ALIAS }}
+          GPT_ANDROIDOS_KEY_PASSWORD: ${{ secrets.GPT_ANDROIDOS_KEY_PASSWORD }}
+        working-directory: upstream/clawgui-app
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
+
+      - name: Verify signed APK and pinned signer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp upstream/clawgui-app/app/build/outputs/apk/release/app-release.apk release/gpt-androidos.apk
+          apk=release/gpt-androidos.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
+          signer="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | awk '/Signer #1 certificate SHA-256 digest:/ {print $NF}')"
+          test "${#signer}" -eq 64
+          expected="$(python3 -c 'import json; print(json.load(open("farm/updates/gpt-androidos/stable.json")).get("signer_sha256",""))')"
+          if [ -n "$expected" ] && [ "$expected" != "$signer" ]; then
+            echo 'APK signer mismatch: refusing release'
+            exit 3
+          fi
+          echo "APK_SHA256=$(sha256sum "$apk" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "APK_SIGNER_SHA256=$signer" >> "$GITHUB_ENV"
+
+      - name: Publish immutable public Release and update public channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="gpt-androidos-v$VERSION_CODE"
+          if gh release view "$tag" --repo Sharkecho/Public-Build-Farm >/dev/null 2>&1; then
+            echo "Version already released: $tag (refusing overwrite)"
+            exit 3
+          fi
+          gh release create "$tag" "release/gpt-androidos.apk#gpt-androidos.apk" \
+            --repo Sharkecho/Public-Build-Farm --title "GPT-AndroidOS v$VERSION_CODE" \
+            --notes "Android Agent, user-confirmed in-app upgrade. No private audio/ROM source." \
+            --latest=false
+          python3 - <<'PY'
+          import json, os
+          body = dict(
+              schema_version=1,
+              version_code=int(os.environ["VERSION_CODE"]),
+              version_name="0.2.0-gpt." + os.environ["VERSION_CODE"],
+              apk_url="https://github.com/Sharkecho/Public-Build-Farm/releases/download/gpt-androidos-v"
+                + os.environ["VERSION_CODE"] + "/gpt-androidos.apk",
+              sha256=os.environ["APK_SHA256"],
+              signer_sha256=os.environ["APK_SIGNER_SHA256"],
+              status="SIGNED_STABLE",
+          )
+          with open("channel-next.json", "w", encoding="utf-8") as f:
+              json.dump(body, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          PY
+          sha="$(gh api repos/Sharkecho/Public-Build-Farm/contents/updates/gpt-androidos/stable.json --jq .sha)"
+          content="$(base64 -w0 channel-next.json)"
+          gh api -X PUT repos/Sharkecho/Public-Build-Farm/contents/updates/gpt-androidos/stable.json \
+            -f message="release(agent): publish signed stable v$VERSION_CODE" \
+            -f sha="$sha" -f content="$content" >/dev/null
+          echo "SIGNED_ANDROID_UPDATE_PUBLISHED=$tag" >> "$GITHUB_STEP_SUMMARY"
