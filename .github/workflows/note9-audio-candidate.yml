@@ -1,0 +1,56 @@
+name: Note9 audio candidate source gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/note9-audio-candidate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-gate:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Check out fixed private audio source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/GPT-AndroidOS
+          ref: 0574085fc9ae0c5f19e7bf55a424bcf6a75cd5ef
+          path: source
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Verify source revision and fetch public dependency
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git -C source rev-parse HEAD).Trim()
+          if ($actual -ne '0574085fc9ae0c5f19e7bf55a424bcf6a75cd5ef') { throw "Source mismatch: $actual" }
+          git -C source submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
+          "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
+
+      - name: Run audio source contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & powershell -NoProfile -ExecutionPolicy Bypass -File source/application/tests/run_all_contract_tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Audio contracts failed: $LASTEXITCODE" }
+
+      - name: Record source gate result
+        shell: pwsh
+        run: |
+          "SOURCE_SHA=$env:SOURCE_SHA" >> $env:GITHUB_STEP_SUMMARY
+          'AUDIO_SOURCE_CONTRACTS=PASS' >> $env:GITHUB_STEP_SUMMARY
+          'ANDROID_APK=NOT_BUILT' >> $env:GITHUB_STEP_SUMMARY
