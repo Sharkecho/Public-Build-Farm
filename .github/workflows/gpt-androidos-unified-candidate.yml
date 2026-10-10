@@ -38,7 +38,9 @@ jobs:
           repository: Sharkecho/GPT-AndroidOS
           ref: b9067901e33dac60bfd960bec05c68f02c47bdab
           path: source
-          fetch-depth: 8
+          # Keep the immutable native baseline reachable after test-only commits.
+          # Integrity and native-input equality gates below remain mandatory.
+          fetch-depth: 32
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           persist-credentials: false
 
