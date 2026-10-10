@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/GPT-AndroidOS
-          ref: 0574085fc9ae0c5f19e7bf55a424bcf6a75cd5ef
+          ref: 467c8551e0d6999cba89f9e5fdb55b8f964f8aec
           path: source
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           persist-credentials: false
@@ -40,7 +40,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $actual = (git -C source rev-parse HEAD).Trim()
-          if ($actual -ne '0574085fc9ae0c5f19e7bf55a424bcf6a75cd5ef') { throw "Source mismatch: $actual" }
+          if ($actual -ne '467c8551e0d6999cba89f9e5fdb55b8f964f8aec') { throw "Source mismatch: $actual" }
           git -C source submodule update --init --recursive
           if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
           "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & powershell -NoProfile -ExecutionPolicy Bypass -File source/application/tests/run_all_contract_tests.ps1
+          & pwsh -NoProfile -File source/application/tests/run_all_contract_tests.ps1
           if ($LASTEXITCODE -ne 0) { throw "Audio contracts failed: $LASTEXITCODE" }
 
       - name: Record source gate result
