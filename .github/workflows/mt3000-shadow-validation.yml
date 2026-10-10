@@ -1,0 +1,206 @@
+# TEMPLATE ONLY. Parent replaces the forty-zero source SHA below, reviews, then
+# copies this file to .github/workflows/mt3000-shadow-validation.yml in the public
+# Build Farm. No dispatch is performed here. workflow_dispatch becomes available
+# after the workflow exists on that repository's default branch.
+# Private command output stays in RUNNER_TEMP until the hosted runner disappears.
+# Never upload/cache private checkout, target/, dist/, logs, JUnit, host inventory,
+# fixtures, network observations or model data. The sole artifact is summary.json.
+name: MT3000 lightweight shadow gate
+
+on:
+  push:
+    branches:
+      - codex/mt3000-shadow-gate-20261010
+    paths:
+      - .github/workflows/mt3000-shadow-validation.yml
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Immutable private source revision (40 lowercase hex characters)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Exactly one private revision for the whole job; zero is deliberately BLOCKED.
+      SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '17187774d20eddf44de26a720001a61383aaa891' }}
+      RUSTUP_TOOLCHAIN: stable
+      CARGO_BUILD_JOBS: '2'
+      MT3000_SHADOW_WORKFLOW_TEMPLATE: ${{ runner.temp }}/mt3000-shadow-private/workflow-template.yml
+    steps:
+      - name: Validate immutable source input
+        id: pin
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, sys
+          names = (
+              "source-pin", "linux-unprivileged", "rust-fmt", "rust-test",
+              "rust-linux-permissions", "rust-build", "rust-arm64-musl", "npm-ci",
+              "npm-test", "npm-typecheck", "npm-build", "schema", "secret-scan",
+              "write-contract", "agent", "affected-controller", "shadow-ci", "mock-http-ui-e2e",
+              "linux-runtime-smoke",
+          )
+          value = os.environ.get("SOURCE_SHA", "")
+          zero = "0" * 40
+          valid = re.fullmatch(r"[0-9a-f]{40}", value) is not None and value != zero
+          sha = value if valid else zero
+          public = pathlib.Path(os.environ["RUNNER_TEMP"]) / "mt3000-shadow-public"
+          public.mkdir(mode=0o700, exist_ok=True)
+          summary = {
+              "source_sha": sha, "status": "BLOCKED", "exit_code": 2,
+              "checks": [{"name": n, "status": "NOT_STARTED", "exit_code": None, "counts": {}} for n in names],
+              "counts": {"total": len(names), "passed": 0, "failed": 0, "blocked": 0, "not_started": len(names)},
+          }
+          (public / "summary.json").write_text(json.dumps(summary) + "\n")
+          if valid:
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write("source_sha=" + sha + "\n")
+          print(json.dumps({"source_sha": sha, "name": "source-input", "status": "PASS" if valid else "BLOCKED", "exit_code": 0 if valid else 2}))
+          sys.exit(0 if valid else 2)
+          PY
+
+      - name: Checkout pinned private source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/MT3000
+          ref: ${{ steps.pin.outputs.source_sha }}
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+          submodules: false
+          lfs: false
+
+      - name: Prepare public Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Prepare lightweight test dependencies privately
+        shell: bash
+        run: |
+          private="$RUNNER_TEMP/mt3000-shadow-private"
+          mkdir -m 700 -p "$private"
+          set +e
+          (
+            set -e
+            test "$(id -u)" -ne 0
+            python3 -m venv "$private/venv"
+            "$private/venv/bin/python" -m pip install --disable-pip-version-check pytest pyyaml paramiko jsonschema
+            rustup toolchain install stable --profile minimal --component rustfmt
+            rustup target add --toolchain stable aarch64-unknown-linux-musl
+            # Read the PUBLIC workflow at its exact event revision. This lets
+            # self-tests validate the template without committing artifacts/ in
+            # the private repo. No private source is copied or published here.
+            curl --fail --silent --show-error --location --retry 3 \
+              "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/.github/workflows/mt3000-shadow-validation.yml" \
+              -o "$MT3000_SHADOW_WORKFLOW_TEMPLATE"
+          ) > "$private/setup.log" 2>&1
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            printf '%s\n' "$private/venv/bin" >> "$GITHUB_PATH"
+            printf '{"name":"runner-setup","status":"PASS","exit_code":0}\n'
+          else
+            printf '{"name":"runner-setup","status":"FAIL","exit_code":%d}\n' "$code"
+          fi
+          exit "$code"
+
+      - name: Run pinned private checks
+        shell: bash
+        env:
+          PINNED_SOURCE_SHA: ${{ steps.pin.outputs.source_sha }}
+        run: |
+          private="$RUNNER_TEMP/mt3000-shadow-private"
+          cd "$GITHUB_WORKSPACE/private-source"
+          # The driver's own diagnostics are private too. Publication is a separate
+          # strict validator below, not cat/tee/tail of anything in this directory.
+          python scripts/ci_shadow_validation.py \
+            --source-sha "$PINNED_SOURCE_SHA" \
+            --log-dir "$private/checks" \
+            --summary "$RUNNER_TEMP/mt3000-shadow-public/summary.json" \
+            > "$private/driver.log" 2>&1
+
+      - name: Publish only validated gate metadata
+        id: publish
+        if: always()
+        shell: bash
+        env:
+          PINNED_SOURCE_SHA: ${{ steps.pin.outputs.source_sha }}
+        run: |
+          python3 - "$RUNNER_TEMP/mt3000-shadow-public/summary.json" "$PINNED_SOURCE_SHA" <<'PY'
+          import json, pathlib, re, sys
+          names = (
+              "source-pin", "linux-unprivileged", "rust-fmt", "rust-test",
+              "rust-linux-permissions", "rust-build", "rust-arm64-musl", "npm-ci",
+              "npm-test", "npm-typecheck", "npm-build", "schema", "secret-scan",
+              "write-contract", "agent", "affected-controller", "shadow-ci", "mock-http-ui-e2e",
+              "linux-runtime-smoke",
+          )
+          path = pathlib.Path(sys.argv[1])
+          value = sys.argv[2]
+          sha = value if re.fullmatch(r"[0-9a-f]{40}", value) and value != "0" * 40 else "0" * 40
+          fallback = {
+              "source_sha": sha, "status": "BLOCKED", "exit_code": 2,
+              "checks": [{"name": n, "status": "NOT_STARTED", "exit_code": None, "counts": {}} for n in names],
+              "counts": {"total": len(names), "passed": 0, "failed": 0, "blocked": 0, "not_started": len(names)},
+          }
+          try:
+              data = json.loads(path.read_text())
+              assert sha != "0" * 40
+              assert set(data) == {"source_sha", "status", "exit_code", "checks", "counts"}
+              assert data["source_sha"] == sha
+              assert type(data["checks"]) is list and len(data["checks"]) == len(names)
+              for name, row in zip(names, data["checks"]):
+                  assert type(row) is dict and set(row) == {"name", "status", "exit_code", "counts"}
+                  assert row["name"] == name
+                  status, code, counts = row["status"], row["exit_code"], row["counts"]
+                  assert status in {"PASS", "FAIL", "BLOCKED", "NOT_STARTED"}
+                  assert (status == "NOT_STARTED" and code is None) or (
+                      type(code) is int and -255 <= code <= 255 and (
+                          (status == "PASS" and code == 0) or (status in {"FAIL", "BLOCKED"} and code != 0)
+                      )
+                  )
+                  assert type(counts) is dict and set(counts) <= {"tests", "passed", "failed", "skipped"}
+                  assert all(type(n) is int and 0 <= n <= 1000000 for n in counts.values())
+                  if counts:
+                      assert set(counts) == {"tests", "passed", "failed", "skipped"}
+                      assert status != "NOT_STARTED"
+                      assert counts["tests"] == counts["passed"] + counts["failed"] + counts["skipped"]
+                      if status == "PASS":
+                          assert counts["tests"] > 0 and counts["failed"] == counts["skipped"] == 0
+              counts = {"total": len(names), **{
+                  key: sum(row["status"] == status for row in data["checks"])
+                  for key, status in zip(("passed", "failed", "blocked", "not_started"), ("PASS", "FAIL", "BLOCKED", "NOT_STARTED"))
+              }}
+              status = "FAIL" if counts["failed"] else ("BLOCKED" if counts["blocked"] or counts["not_started"] else "PASS")
+              assert type(data["exit_code"]) is int
+              assert type(data["counts"]) is dict and all(type(n) is int for n in data["counts"].values())
+              assert data["counts"] == counts and data["status"] == status
+              assert data["exit_code"] == {"PASS": 0, "FAIL": 1, "BLOCKED": 2}[status]
+          except Exception:
+              data = fallback
+          # Reconstruct, rather than forwarding text supplied by private commands.
+          safe = {key: data[key] for key in ("source_sha", "status", "exit_code", "checks", "counts")}
+          path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+          path.write_text(json.dumps(safe, sort_keys=True) + "\n")
+          print(json.dumps(safe, sort_keys=True))
+          sys.exit(safe["exit_code"])
+          PY
+
+      - name: Upload metadata summary only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt3000-shadow-summary
+          path: ${{ runner.temp }}/mt3000-shadow-public/summary.json
+          if-no-files-found: error
+          retention-days: 7
