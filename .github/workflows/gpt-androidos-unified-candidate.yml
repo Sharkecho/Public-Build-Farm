@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/GPT-AndroidOS
-          ref: 3455a1dcbf4f8c0ce08f0fa0de2c8dccea8fa947
+          ref: 8234507f7ca1c7c2f9cf7a08670f36cd8ee059e0
           path: source
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           persist-credentials: false
@@ -43,7 +43,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $actual = (git -C source rev-parse HEAD).Trim()
-          if ($actual -ne '3455a1dcbf4f8c0ce08f0fa0de2c8dccea8fa947') { throw "Source mismatch: $actual" }
+          if ($actual -ne '8234507f7ca1c7c2f9cf7a08670f36cd8ee059e0') { throw "Source mismatch: $actual" }
           git -C source submodule update --init --recursive
           if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
           "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
@@ -168,6 +168,8 @@ jobs:
             & pwsh -NoProfile -File $test.FullName
             if ($LASTEXITCODE -ne 0) { throw "Unified contract failed: $($test.Name)" }
           }
+          & pwsh -NoProfile -File tests/live_input_meter_test.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Live input meter or output worker completion tests failed' }
 
       - name: Verify APK identity and archive candidate
         shell: pwsh
