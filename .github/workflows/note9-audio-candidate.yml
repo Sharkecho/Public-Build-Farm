@@ -52,6 +52,30 @@ jobs:
           & pwsh -NoProfile -File source/application/tests/run_all_contract_tests.ps1
           if ($LASTEXITCODE -ne 0) { throw "Audio contracts failed: $LASTEXITCODE" }
 
+      - name: Set up MSVC for native host tests
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Run native DSP, engine, and session tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $native = Join-Path $env:GITHUB_WORKSPACE 'source\application\native'
+          $out = Join-Path $env:RUNNER_TEMP 'note9-native-tests'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /WX "/Fe:$(Join-Path $out 'dsp.exe')" (Join-Path $native 'tests\native_dsp_chain_test.cpp')
+          if ($LASTEXITCODE -ne 0) { throw 'Native DSP compile failed' }
+          & (Join-Path $out 'dsp.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native DSP test failed' }
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /WX "/Fe:$(Join-Path $out 'engine.exe')" (Join-Path $native 'tests\native_audio_engine_test.cpp') (Join-Path $native 'native_audio_engine.cpp')
+          if ($LASTEXITCODE -ne 0) { throw 'Native engine compile failed' }
+          & (Join-Path $out 'engine.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native engine test failed' }
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /WX "/Fe:$(Join-Path $out 'session.exe')" (Join-Path $native 'tests\native_session_test.cpp') (Join-Path $native 'native_session.cpp') (Join-Path $native 'native_audio_engine.cpp')
+          if ($LASTEXITCODE -ne 0) { throw 'Native session compile failed' }
+          & (Join-Path $out 'session.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native session test failed' }
+          'PASS: native DSP, engine, and session host tests'
+
       - name: Prepare Android SDK and NDK
         shell: pwsh
         run: |
@@ -119,6 +143,7 @@ jobs:
           $sha = (Get-FileHash $apk -Algorithm SHA256).Hash
           "SOURCE_SHA=$env:SOURCE_SHA" >> $env:GITHUB_STEP_SUMMARY
           'AUDIO_SOURCE_CONTRACTS=PASS' >> $env:GITHUB_STEP_SUMMARY
+          'NATIVE_HOST_TESTS=PASS' >> $env:GITHUB_STEP_SUMMARY
           'ANDROID_APK=DEBUG_BUILD_VERIFIED' >> $env:GITHUB_STEP_SUMMARY
           "APK_SHA256=$sha" >> $env:GITHUB_STEP_SUMMARY
           'NOTE9_DEVICE_TEST=NOT_RUN' >> $env:GITHUB_STEP_SUMMARY
