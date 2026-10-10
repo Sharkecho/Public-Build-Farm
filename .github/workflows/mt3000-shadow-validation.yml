@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - codex/mt3000-shadow-gate-20261010
+      - ci-fix/38063446767-*
     paths:
       - .github/workflows/mt3000-shadow-validation.yml
   workflow_dispatch:
@@ -29,10 +30,11 @@ jobs:
     timeout-minutes: 30
     env:
       # Exactly one private revision for the whole job; zero is deliberately BLOCKED.
-      SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '17187774d20eddf44de26a720001a61383aaa891' }}
+      SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '234c39ad225e3520bf330116bd18f81d66afa3d1' }}
       RUSTUP_TOOLCHAIN: stable
       CARGO_BUILD_JOBS: '2'
-      MT3000_SHADOW_WORKFLOW_TEMPLATE: ${{ runner.temp }}/mt3000-shadow-private/workflow-template.yml
+      # Job env cannot reference runner; this file contains PUBLIC workflow text only.
+      MT3000_SHADOW_WORKFLOW_TEMPLATE: /tmp/mt3000-shadow-public-workflow-template.yml
     steps:
       - name: Validate immutable source input
         id: pin
@@ -67,17 +69,63 @@ jobs:
           PY
 
       - name: Checkout pinned private source
-        uses: actions/checkout@v4
-        with:
-          repository: Sharkecho/MT3000
-          ref: ${{ steps.pin.outputs.source_sha }}
-          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
-          path: private-source
-          persist-credentials: false
-          fetch-depth: 1
-          show-progress: false
-          submodules: false
-          lfs: false
+        id: source-checkout
+        shell: bash
+        env:
+          PINNED_SOURCE_SHA: ${{ steps.pin.outputs.source_sha }}
+          BUILD_FARM_SOURCE_TOKEN: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+        run: |
+          # Checkout actions can print PRIVATE commit subjects even with progress
+          # disabled. Capture the entire Git process, not just compiler output.
+          set +x
+          zero="$(printf '%040d' 0)"
+          public_sha="$zero"
+          code=2
+          private="$RUNNER_TEMP/private"
+          if [[ "${PINNED_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ && "$PINNED_SOURCE_SHA" != "$zero" ]]; then
+            public_sha="$PINNED_SOURCE_SHA"
+            if mkdir -m 700 -p "$private" >/dev/null 2>&1; then
+              set +e
+              (
+                set -e
+                set -o pipefail
+                umask 077
+                # Remove every trace variant, including trace2 destinations.
+                for key in $(compgen -e); do
+                  case "$key" in GIT_TRACE*|GIT_CURL_VERBOSE) unset "$key" ;; esac
+                done
+                unset GIT_CONFIG_FILE GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+                export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+                export GIT_TERMINAL_PROMPT=0
+                test -n "${BUILD_FARM_SOURCE_TOKEN:-}"
+                authorization="$(printf 'x-access-token:%s' "$BUILD_FARM_SOURCE_TOKEN" | base64 | tr -d '\r\n')"
+                export GIT_CONFIG_COUNT=2
+                export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+                export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization"
+                export GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1=
+                unset BUILD_FARM_SOURCE_TOKEN authorization
+                checkout="$GITHUB_WORKSPACE/private-source"
+                git init --quiet "$checkout"
+                git -C "$checkout" remote add origin https://github.com/Sharkecho/MT3000.git
+                git -C "$checkout" fetch --quiet --no-tags --depth=1 origin "$PINNED_SOURCE_SHA"
+                git -C "$checkout" -c advice.detachedHead=false checkout --quiet --detach FETCH_HEAD
+                actual="$(git -C "$checkout" rev-parse --verify HEAD)"
+                test "$actual" = "$PINNED_SOURCE_SHA"
+                # The two config overrides live in this process tree only. No
+                # credential or auth header is written to any Git config file.
+                unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+                unset GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
+              ) > "$private/checkout.log" 2>&1
+              code=$?
+              set -e
+            else
+              code=1
+            fi
+          fi
+          unset BUILD_FARM_SOURCE_TOKEN
+          if [ "$code" -eq 0 ]; then status=PASS; else status=FAIL; fi
+          printf '{"source_sha":"%s","name":"source-checkout","status":"%s","exit_code":%d}\n' "$public_sha" "$status" "$code"
+          exit "$code"
 
       - name: Prepare public Node runtime
         uses: actions/setup-node@v4
