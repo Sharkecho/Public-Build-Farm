@@ -4,6 +4,7 @@ on:
     paths:
       - 'requests/ai-translator/emulator.json'
       - '.github/workflows/trustlyta-android-emulator.yml'
+      - 'scripts/ci/trustlyta-emulator-smoke.sh'
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,9 +27,13 @@ jobs:
         run: |
           set -euo pipefail
           ref="$(python3 -c 'import json; print(json.load(open("farm/requests/ai-translator/emulator.json"))["source_sha"])')"
+          version="$(python3 -c 'import json; print(json.load(open("farm/requests/ai-translator/emulator.json"))["version_code"])')"
           test "${#ref}" -eq 40
           [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$version" =~ ^[0-9]{1,7}$ ]]
+          test "$version" -ge 103
           echo "SOURCE_SHA=$ref" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$version" >> "$GITHUB_ENV"
           echo "sha=$ref" >> "$GITHUB_OUTPUT"
       - id: private_checkout
         name: Checkout private Trustlyta source
@@ -67,7 +72,7 @@ jobs:
         name: Build Android release-runtime package (emulator test signature)
         timeout-minutes: 15
         working-directory: source/mobile
-        run: flutter build apk --release --build-number=101 --dart-define=API_BASE_URL=https://43-163-91-54.sslip.io
+        run: flutter build apk --release --build-number="$VERSION_CODE" --dart-define=API_BASE_URL=https://43-163-91-54.sslip.io
       - id: kvm
         name: Grant ephemeral Runner access to KVM
         shell: bash

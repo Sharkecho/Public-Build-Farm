@@ -60,11 +60,27 @@ jobs:
           jq -n --arg source_sha "$SOURCE_SHA" --argjson version_code "$REVIEW_BUILD_NUMBER" '{source_sha:$source_sha,version_code:$version_code}' > build/app/outputs/flutter-apk/source-proof.json
           echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
           echo "UNSIGNED_VERSION_CODE=$REVIEW_BUILD_NUMBER" >> "$GITHUB_STEP_SUMMARY"
+      - name: Encrypt unsigned candidate before public artifact upload
+        working-directory: farm
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check 'cryptography>=45,<51'
+          python3 -m unittest discover -s tests -p test_m2_apk_envelope.py -v
+          mkdir -p "$RUNNER_TEMP/trustlyta-unsigned"
+          python3 scripts/m2_apk_envelope.py encrypt \
+            --input ../source/mobile/build/app/outputs/flutter-apk/app-release.apk \
+            --output "$RUNNER_TEMP/trustlyta-unsigned/apk.enc" \
+            --manifest "$RUNNER_TEMP/trustlyta-unsigned/manifest.json" \
+            --source-sha "$SOURCE_SHA" \
+            --public-key security/m2_apk_review_public.pem
+          cp ../source/mobile/build/app/outputs/flutter-apk/source-proof.json \
+            "$RUNNER_TEMP/trustlyta-unsigned/source-proof.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: trustlyta-unsigned-update-v${{ env.REVIEW_BUILD_NUMBER }}
+          name: trustlyta-unsigned-update-v${{ env.REVIEW_BUILD_NUMBER }}-encrypted
           path: |
-            source/mobile/build/app/outputs/flutter-apk/app-release.apk
-            source/mobile/build/app/outputs/flutter-apk/source-proof.json
+            ${{ runner.temp }}/trustlyta-unsigned/apk.enc
+            ${{ runner.temp }}/trustlyta-unsigned/manifest.json
+            ${{ runner.temp }}/trustlyta-unsigned/source-proof.json
           retention-days: 2
           if-no-files-found: error
