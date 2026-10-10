@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/GPT-AndroidOS
-          ref: 67c18e3fcbc71e3ee862fa43f91ea7a6baa4c6fd
+          ref: 3455a1dcbf4f8c0ce08f0fa0de2c8dccea8fa947
           path: source
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           persist-credentials: false
@@ -43,7 +43,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $actual = (git -C source rev-parse HEAD).Trim()
-          if ($actual -ne '67c18e3fcbc71e3ee862fa43f91ea7a6baa4c6fd') { throw "Source mismatch: $actual" }
+          if ($actual -ne '3455a1dcbf4f8c0ce08f0fa0de2c8dccea8fa947') { throw "Source mismatch: $actual" }
           git -C source submodule update --init --recursive
           if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
           "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
@@ -182,6 +182,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'APK package inspection failed' }
           $packageLine = $badging | Select-String '^package:' | Select-Object -First 1
           if (-not $packageLine -or $packageLine.Line -notmatch "name='com\.clawgui\.ng' versionCode='1' versionName='0\.2\.0'") { throw "Unexpected package identity or version: $packageLine" }
+          $labels = @($badging | Select-String '^application-label(?:-[^:]+)?:')
+          if ($labels.Count -eq 0 -or @($labels | Where-Object { $_.Line -notmatch "^application-label(?:-[^:]+)?:'GPT-AndroidOS'$" }).Count -ne 0) { throw 'Unified APK has an incorrect localized application label' }
+          $badging | Select-String "^application-label:|^application-label-zh(?:-CN)?:"
           $badging | Select-String '^package:|^native-code:'
           $sha = (Get-FileHash $apk -Algorithm SHA256).Hash
           "SOURCE_SHA=$env:SOURCE_SHA" >> $env:GITHUB_STEP_SUMMARY
