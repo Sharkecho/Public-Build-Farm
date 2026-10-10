@@ -116,18 +116,21 @@ jobs:
           set -euo pipefail
           SOURCE_SHA="$(git rev-parse HEAD)"
           APK="mobile/build/app/outputs/flutter-apk/app-debug.apk"
+          TEST_APK="mobile/build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
           test -f "$APK"
-          echo "AI_TRANSLATOR_SOURCE_SHA=$SOURCE_SHA"
+          test -f "$TEST_APK"
+          printf 'AI_TRANSLATOR_SOURCE_SHA=%s\n' "$SOURCE_SHA"
           sha256sum "$APK"
+          sha256sum "$TEST_APK"
           {
-            echo "## AI Translator Android validation"
-            echo
-            echo "- Source ref: `$SOURCE_REF`"
-            echo "- Source SHA: `$SOURCE_SHA`"
-            echo "- Flutter analyze: PASS"
-            echo "- Flutter tests: PASS"
-            echo "- Android debug build: PASS"
-            echo "- APK uploaded: $UPLOAD_APK"
+            printf '## AI Translator Android validation\n\n'
+            printf -- '- Source ref: %s\n' "$SOURCE_REF"
+            printf -- '- Source SHA: %s\n' "$SOURCE_SHA"
+            printf -- '- Flutter analyze: PASS\n'
+            printf -- '- Flutter tests: PASS\n'
+            printf -- '- Android debug build (test target): PASS\n'
+            printf -- '- AndroidTest APK build: PASS\n'
+            printf -- '- APK uploaded: %s\n' "$UPLOAD_APK"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload debug APK only when explicitly requested
@@ -137,7 +140,7 @@ jobs:
           name: ai-translator-debug-and-androidTest-apk
           path: |
             source/mobile/build/app/outputs/flutter-apk/app-debug.apk
-            source/mobile/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            source/mobile/build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
           retention-days: 3
 
