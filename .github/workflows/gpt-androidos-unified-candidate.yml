@@ -12,12 +12,15 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   source-gate:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: windows-2022
     timeout-minutes: 90
+    env:
+      NATIVE_REUSED: 'false'
     steps:
       - name: Keep source and patch line endings unchanged
         shell: pwsh
@@ -33,8 +36,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/GPT-AndroidOS
-          ref: 5a67b8ccbb24f8f8fca2b2327ffe66dca852551d
+          ref: 2a21bb6e10fd9e87a4df3d0b5b7312e1cdb73d0b
           path: source
+          fetch-depth: 8
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           persist-credentials: false
 
@@ -43,7 +47,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $actual = (git -C source rev-parse HEAD).Trim()
-          if ($actual -ne '5a67b8ccbb24f8f8fca2b2327ffe66dca852551d') { throw "Source mismatch: $actual" }
+          if ($actual -ne '2a21bb6e10fd9e87a4df3d0b5b7312e1cdb73d0b') { throw "Source mismatch: $actual" }
           git -C source submodule update --init --recursive
           if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
           "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
@@ -54,6 +58,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & pwsh -NoProfile -File source/application/tests/run_all_contract_tests.ps1
           if ($LASTEXITCODE -ne 0) { throw "Audio contracts failed: $LASTEXITCODE" }
+          & pwsh -NoProfile -File source/unified-android/tests/main_activity_syntax_test.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Activity syntax check failed before native compilation' }
 
       - name: Set up MSVC for native host tests
         uses: ilammy/msvc-dev-cmd@v1
@@ -96,13 +102,77 @@ jobs:
           if (-not (Test-Path (Join-Path $sdk 'ndk\29.0.14206865\build\cmake\android.toolchain.cmake'))) { throw 'NDK toolchain missing' }
           "ANDROID_SDK_ROOT=$sdk" >> $env:GITHUB_ENV
 
+      - name: Check immutable native inputs against the verified baseline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseline = '3455a1dcbf4f8c0ce08f0fa0de2c8dccea8fa947'
+          git -C source cat-file -e "${baseline}^{commit}"
+          if ($LASTEXITCODE -ne 0) { 'NATIVE_REUSE_ELIGIBLE=false' >> $env:GITHUB_ENV; exit 0 }
+          git -C source diff --exit-code $baseline HEAD -- application/native application/third_party/mobRealVoice application/build.ps1 application/scripts application/src/android/llama/cpp application/src/com/note9/uac2/NativeAudioEngine.java application/src/com/note9/uac2/NativeAudioSession.java application/src/com/note9/uac2/NativeAudioSnapshot.java application/src/com/note9/uac2/BeatriceRuntime.java agent/clawgui.lock unified-android/audio/build.gradle.kts
+          if ($LASTEXITCODE -eq 0) { 'NATIVE_REUSE_ELIGIBLE=true' >> $env:GITHUB_ENV }
+          elseif ($LASTEXITCODE -eq 1) { 'NATIVE_REUSE_ELIGIBLE=false' >> $env:GITHUB_ENV }
+          else { throw 'Cannot validate native input provenance' }
+
+      - name: Download immutable baseline artifact (full rebuild if unavailable)
+        id: native_archive
+        if: env.NATIVE_REUSE_ELIGIBLE == 'true'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'native-baseline-11669242676.zip'
+          $start = [Diagnostics.ProcessStartInfo]::new('gh.exe')
+          foreach ($arg in @('api','repos/Sharkecho/Public-Build-Farm/actions/artifacts/11669242676/zip')) { $start.ArgumentList.Add($arg) }
+          $start.UseShellExecute = $false
+          $start.CreateNoWindow = $true
+          $start.RedirectStandardOutput = $true
+          $start.RedirectStandardError = $true
+          $process = [Diagnostics.Process]::Start($start)
+          $file = [IO.File]::Create($archive)
+          try { $process.StandardOutput.BaseStream.CopyTo($file) } finally { $file.Dispose() }
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { throw 'Baseline artifact unavailable; rebuilding all native inputs' }
+
+      - name: Verify baseline integrity and stage unchanged native libraries
+        if: steps.native_archive.outcome == 'success'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'native-baseline-11669242676.zip'
+          $expected = '1e26c5bda7263d511cb6d800188b99fe7db067fc82f18b57a8cfa64fccfc4547'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Baseline artifact SHA-256 mismatch; refusing reuse' }
+          $expanded = Join-Path $env:RUNNER_TEMP 'native-baseline-11669242676'
+          Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+          $apks = @(Get-ChildItem -LiteralPath $expanded -Recurse -File -Filter app-debug.apk)
+          if ($apks.Count -ne 1) { throw 'Ambiguous native baseline APK' }
+          & (Join-Path $env:ANDROID_SDK_ROOT 'build-tools/36.0.0/apksigner.bat') verify $apks[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline APK signature invalid' }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $target = Join-Path $env:GITHUB_WORKSPACE 'source/build/unified-audio-native/arm64-v8a'
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          $zip = [IO.Compression.ZipFile]::OpenRead($apks[0].FullName)
+          try {
+            foreach ($name in @('libvoice_model_bridge.so','libLiteRt.so','libllama-android.so','libllama.so','libggml.so','libggml-cpu.so','libggml-base.so')) {
+              $entry = $zip.GetEntry("lib/arm64-v8a/$name")
+              if ($null -eq $entry -or $entry.Length -eq 0) { throw "Missing verified baseline JNI: $name" }
+              [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $target $name))
+            }
+          } finally { $zip.Dispose() }
+          'NATIVE_REUSED=true' >> $env:GITHUB_ENV
+          'NATIVE_BASELINE_RUN=38050030270; ARCHIVE_SHA256_VERIFIED=true' >> $env:GITHUB_STEP_SUMMARY
+
       - name: Prepare pinned ONNX and LiteRT dependencies
+        if: env.NATIVE_REUSED != 'true'
         shell: pwsh
         run: |
           & pwsh -NoProfile -File source/application/scripts/prepare-ci-deps.ps1
           if ($LASTEXITCODE -ne 0) { throw "Model dependency preparation failed: $LASTEXITCODE" }
 
       - name: Build pinned official llama Android JNI
+        if: env.NATIVE_REUSED != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -123,6 +193,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "llama JNI build failed: $LASTEXITCODE" }
 
       - name: Build debug signed Note9 audio APK
+        if: env.NATIVE_REUSED != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -137,7 +208,7 @@ jobs:
           path: upstream
           persist-credentials: false
 
-      - name: Stage same-run audio native libraries and unified launcher
+      - name: Stage verified audio native libraries and unified launcher
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -145,14 +216,16 @@ jobs:
           $apk = Join-Path $env:GITHUB_WORKSPACE 'source/application/build/story-orchestrator/note9-audio-candidate-debug.apk'
           $target = Join-Path $env:GITHUB_WORKSPACE 'source/build/unified-audio-native/arm64-v8a'
           New-Item -ItemType Directory -Force -Path $target | Out-Null
-          $archive = [IO.Compression.ZipFile]::OpenRead($apk)
-          try {
-            foreach ($name in @('libvoice_model_bridge.so','libLiteRt.so','libllama-android.so','libllama.so','libggml.so','libggml-cpu.so','libggml-base.so')) {
-              $entry = $archive.GetEntry("lib/arm64-v8a/$name")
-              if ($null -eq $entry -or $entry.Length -eq 0) { throw "Missing same-run JNI: $name" }
-              [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $target $name))
-            }
-          } finally { $archive.Dispose() }
+          if ($env:NATIVE_REUSED -ne 'true') {
+            $archive = [IO.Compression.ZipFile]::OpenRead($apk)
+            try {
+              foreach ($name in @('libvoice_model_bridge.so','libLiteRt.so','libllama-android.so','libllama.so','libggml.so','libggml-cpu.so','libggml-base.so')) {
+                $entry = $archive.GetEntry("lib/arm64-v8a/$name")
+                if ($null -eq $entry -or $entry.Length -eq 0) { throw "Missing same-run JNI: $name" }
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $target $name))
+              }
+            } finally { $archive.Dispose() }
+          }
           & pwsh -NoProfile -File source/unified-android/prepare-agent.ps1 -ClawGuiRoot upstream
           if ($LASTEXITCODE -ne 0) { throw 'Unified launcher patch failed' }
           "CLAWGUI_APP_DIR=$(Join-Path $env:GITHUB_WORKSPACE 'upstream/clawgui-app')" >> $env:GITHUB_ENV
