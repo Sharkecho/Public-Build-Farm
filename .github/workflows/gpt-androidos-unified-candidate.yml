@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/GPT-AndroidOS
-          ref: 2a21bb6e10fd9e87a4df3d0b5b7312e1cdb73d0b
+          ref: 57af7dc6bdf13f9db8044026f8563d55a9d21dd9
           path: source
           fetch-depth: 8
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
@@ -47,7 +47,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $actual = (git -C source rev-parse HEAD).Trim()
-          if ($actual -ne '2a21bb6e10fd9e87a4df3d0b5b7312e1cdb73d0b') { throw "Source mismatch: $actual" }
+          if ($actual -ne '57af7dc6bdf13f9db8044026f8563d55a9d21dd9') { throw "Source mismatch: $actual" }
           git -C source submodule update --init --recursive
           if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
           "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
@@ -60,6 +60,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Audio contracts failed: $LASTEXITCODE" }
           & pwsh -NoProfile -File source/unified-android/tests/main_activity_syntax_test.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Activity syntax check failed before native compilation' }
+          foreach ($name in @('automatic_input_policy_test','live_control_locks_test','u2_indicator_test','tone_sample_policy_test','audio_module_library_test','realtime_tune_policy_test','tuning_monitor_test','foreground_authorization_test')) {
+            & pwsh -NoProfile -File "source/unified-android/tests/$name.ps1"
+            if ($LASTEXITCODE -ne 0) { throw "Live/tone ownership regression failed: $name" }
+          }
+          & pwsh -NoProfile -File source/application/tests/story_playback_java_test.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Ordered story/WAV/segment/progress regression failed' }
 
       - name: Set up MSVC for native host tests
         uses: ilammy/msvc-dev-cmd@v1
@@ -243,6 +249,12 @@ jobs:
           }
           & pwsh -NoProfile -File tests/live_input_meter_test.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Live input meter or output worker completion tests failed' }
+          & pwsh -NoProfile -File tests/tone_kotlin_compile_test.ps1 -AndroidJar (Join-Path $env:ANDROID_SDK_ROOT 'platforms/android-36/android.jar')
+          if ($LASTEXITCODE -ne 0) { throw 'Tone compile regression failed' }
+          & pwsh -NoProfile -File tests/guardian_policy_test.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Guardian startup/record policy regression failed' }
+          & pwsh -NoProfile -File tests/guardian_compile_test.ps1 -AndroidJar (Join-Path $env:ANDROID_SDK_ROOT 'platforms/android-36/android.jar')
+          if ($LASTEXITCODE -ne 0) { throw 'Guardian compile regression failed' }
 
       - name: Verify APK identity and archive candidate
         shell: pwsh
@@ -261,6 +273,13 @@ jobs:
           if ($labels.Count -eq 0 -or @($labels | Where-Object { $_.Line -notmatch "^application-label(?:-[^:]+)?:'GPT-AndroidOS'$" }).Count -ne 0) { throw 'Unified APK has an incorrect localized application label' }
           $badging | Select-String "^application-label:|^application-label-zh(?:-CN)?:"
           $badging | Select-String '^package:|^native-code:'
+          $manifestTree = (& (Join-Path $tools 'aapt.exe') dump xmltree $apk AndroidManifest.xml) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect built APK manifest' }
+          $activities = $manifestTree -split '(?m)^\s+E: activity\s+\('
+          $owner = @($activities | Where-Object { $_ -match 'android:name[^\r\n]*"com\.clawgui\.ng\.ui\.UnifiedMainActivity"' })
+          if ($owner.Count -ne 1 -or $owner[0] -notmatch 'android:launchMode[^\r\n]*\(type 0x10\)0x2\b') {
+            throw 'Effective APK launcher must be singleTask to prevent duplicate audio owners'
+          }
           $sha = (Get-FileHash $apk -Algorithm SHA256).Hash
           "SOURCE_SHA=$env:SOURCE_SHA" >> $env:GITHUB_STEP_SUMMARY
           'AUDIO_SOURCE_CONTRACTS=PASS' >> $env:GITHUB_STEP_SUMMARY
