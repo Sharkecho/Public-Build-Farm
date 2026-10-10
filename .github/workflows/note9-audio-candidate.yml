@@ -16,6 +16,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
+      - name: Keep source and patch line endings unchanged
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
