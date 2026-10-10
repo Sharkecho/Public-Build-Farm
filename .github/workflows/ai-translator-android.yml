@@ -23,6 +23,11 @@ on:
         required: true
         default: false
         type: boolean
+      m2_batch:
+        description: "Build isolated UI and instrumentation APKs as one encrypted private batch"
+        required: true
+        default: false
+        type: boolean
       encrypted_delivery:
         description: "Upload only an encrypted review APK for private repository intake"
         required: true
@@ -65,6 +70,7 @@ jobs:
           INPUT_BUILD_ONLY: ${{ inputs.build_only }}
           INPUT_TEST_ONLY: ${{ inputs.test_only }}
           INPUT_ENCRYPTED_DELIVERY: ${{ inputs.encrypted_delivery }}
+          M2_BATCH: ${{ inputs.m2_batch }}
           DISPATCH_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
           DISPATCH_UPLOAD_APK: ${{ github.event.client_payload.upload_apk }}
         run: |
@@ -88,6 +94,14 @@ jobs:
             TEST_ONLY="${INPUT_TEST_ONLY:-false}"
             ENCRYPTED_DELIVERY="${INPUT_ENCRYPTED_DELIVERY:-false}"
           fi
+          M2_BATCH="${M2_BATCH:-false}"
+          if [ "$M2_BATCH" = true ]; then
+            [[ "$SOURCE_REF" =~ ^[a-f0-9]{40}$ ]]
+            test "$ENCRYPTED_DELIVERY" = true
+            test "$UPLOAD_APK" = false
+            test "$TEST_ONLY" = false
+          fi
+          echo "M2_BATCH=$M2_BATCH" >> "$GITHUB_ENV"
           test -n "$SOURCE_REF"
           if [ "$ENCRYPTED_DELIVERY" = true ] && [ "$UPLOAD_APK" = true ]; then
             echo 'Plaintext and encrypted APK uploads cannot be combined' >&2
@@ -134,7 +148,15 @@ jobs:
 
       - name: Analyze Flutter project
         working-directory: source/mobile
-        run: flutter analyze
+        run: |
+          set -euo pipefail
+          if [ "$M2_BATCH" = true ]; then
+            mkdir -p "$RUNNER_TEMP/m2-batch"
+            flutter analyze > "$RUNNER_TEMP/m2-batch/analyze.log" 2>&1 || { echo "FLUTTER_ANALYZE=FAIL; details retained privately"; exit 1; }
+            echo "FLUTTER_ANALYZE=PASS"
+          else
+            flutter analyze
+          fi
 
       - name: Run Flutter tests
         if: env.BUILD_ONLY != 'true' && env.TEST_ONLY != 'true'
@@ -150,9 +172,18 @@ jobs:
           flutter test
 
       - name: Build Android debug APK
-        if: env.TEST_ONLY != 'true'
+        if: env.TEST_ONLY != 'true' && env.M2_BATCH != 'true'
         working-directory: source/mobile
         run: flutter build apk --debug
+
+      - name: Build isolated M2 QA batch
+        if: env.M2_BATCH == 'true'
+        working-directory: source
+        env:
+          M2_BATCH_OUTPUT: ${{ runner.temp }}/m2-batch
+        run: |
+          bash -n scripts/build-m2-qa-batch.sh
+          bash scripts/build-m2-qa-batch.sh
 
       - name: Record build evidence
         if: env.TEST_ONLY != 'true'
@@ -161,6 +192,7 @@ jobs:
           set -euo pipefail
           SOURCE_SHA="$(git rev-parse HEAD)"
           APK="mobile/build/app/outputs/flutter-apk/app-debug.apk"
+          if [ "$M2_BATCH" = true ]; then APK="$RUNNER_TEMP/m2-batch/batch.zip"; fi
           test -f "$APK"
           echo "AI_TRANSLATOR_SOURCE_SHA=$SOURCE_SHA"
           sha256sum "$APK"
@@ -188,8 +220,10 @@ jobs:
           python3 -m pip install --disable-pip-version-check 'cryptography>=45,<51'
           python3 -m unittest discover -s tests -p test_m2_apk_envelope.py -v
           mkdir -p "$RUNNER_TEMP/m2-review"
+          PAYLOAD=../source/mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if [ "$M2_BATCH" = true ]; then PAYLOAD="$RUNNER_TEMP/m2-batch/batch.zip"; fi
           python3 scripts/m2_apk_envelope.py encrypt \
-            --input ../source/mobile/build/app/outputs/flutter-apk/app-debug.apk \
+            --input "$PAYLOAD" \
             --output "$RUNNER_TEMP/m2-review/apk.enc" \
             --manifest "$RUNNER_TEMP/m2-review/manifest.json" \
             --source-sha "$(git -C ../source rev-parse HEAD)" \
