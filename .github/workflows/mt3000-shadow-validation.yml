@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 30
     env:
       # Exactly one private revision for the whole job; zero is deliberately BLOCKED.
-      SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '234c39ad225e3520bf330116bd18f81d66afa3d1' }}
+      SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '2f7ab8d294f11b529bea5189508945cffab94690' }}
       RUSTUP_TOOLCHAIN: stable
       CARGO_BUILD_JOBS: '2'
       # Job env cannot reference runner; this file contains PUBLIC workflow text only.
@@ -176,6 +176,30 @@ jobs:
             --log-dir "$private/checks" \
             --summary "$RUNNER_TEMP/mt3000-shadow-public/summary.json" \
             > "$private/driver.log" 2>&1
+
+      - name: Report bounded failure classification
+        if: failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, xml.etree.ElementTree as ET
+          report = pathlib.Path(os.environ['RUNNER_TEMP']) / 'mt3000-shadow-private/checks/linux-runtime-smoke.xml'
+          allowed = {'AssertionError', 'Failed', 'OSError', 'PermissionError', 'RuntimeError', 'TimeoutError', 'KeyError', 'ValueError', 'JSONDecodeError', 'FileNotFoundError', 'ConnectionRefusedError'}
+          types, lines = set(), set()
+          try:
+              if report.stat().st_size <= 1048576:
+                  tree = ET.fromstring(report.read_bytes())
+                  for row in tree.iter():
+                      if row.tag not in {'failure', 'error'}:
+                          continue
+                      for number, kind in re.findall(r'(?m)^[^\r\n]*\.py:(\d+):\s*([A-Za-z]+)\s*$', row.text or ''):
+                          if kind in allowed and 0 < int(number) <= 1000000:
+                              types.add(kind)
+                              lines.add(int(number))
+          except Exception:
+              pass
+          print(json.dumps({'name': 'linux-runtime-smoke-diagnostic', 'exception_types': sorted(types)[:8], 'line_numbers': sorted(lines)[:8]}))
+          PY
 
       - name: Publish only validated gate metadata
         id: publish
