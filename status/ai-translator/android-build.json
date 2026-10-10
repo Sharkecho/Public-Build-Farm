@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "gate": "trustlyta-android-build",
-  "run_id": 38014129052,
-  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/38014129052",
-  "finished_at": "2026-10-10T01:49:22.325Z",
+  "run_id": 38047940484,
+  "run_url": "https://github.com/Sharkecho/Public-Build-Farm/actions/runs/38047940484",
+  "finished_at": "2026-10-10T11:25:22.825Z",
   "result": "success",
   "verified_pass": true,
   "source_request_note": "See immutable source revision in workflow run"
