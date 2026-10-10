@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Sharkecho/GPT-AndroidOS
-          ref: 4b105e395327fcd53bee4ac265feb72d0b012aff
+          ref: 74632e73fa92e277788fd80160894fb2880ea750
           path: source
           token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
           persist-credentials: false
@@ -43,7 +43,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $actual = (git -C source rev-parse HEAD).Trim()
-          if ($actual -ne '4b105e395327fcd53bee4ac265feb72d0b012aff') { throw "Source mismatch: $actual" }
+          if ($actual -ne '74632e73fa92e277788fd80160894fb2880ea750') { throw "Source mismatch: $actual" }
           git -C source submodule update --init --recursive
           if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
           "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
