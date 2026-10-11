@@ -1,0 +1,157 @@
+name: Note9 audio candidate APK build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/note9-audio-candidate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-gate:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Keep source and patch line endings unchanged
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Check out fixed private audio source
+        uses: actions/checkout@v4
+        with:
+          repository: Sharkecho/GPT-AndroidOS
+          ref: ac2edbe0eadfb1ac2f69f5ab9e7cdea9c6610342
+          path: source
+          token: ${{ secrets.BUILD_FARM_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Verify source revision and fetch public dependency
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git -C source rev-parse HEAD).Trim()
+          if ($actual -ne 'ac2edbe0eadfb1ac2f69f5ab9e7cdea9c6610342') { throw "Source mismatch: $actual" }
+          git -C source submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { throw 'Public submodule checkout failed' }
+          "SOURCE_SHA=$actual" >> $env:GITHUB_ENV
+
+      - name: Run audio source contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & pwsh -NoProfile -File source/application/tests/run_all_contract_tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Audio contracts failed: $LASTEXITCODE" }
+
+      - name: Set up MSVC for native host tests
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Run native DSP, engine, and session tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $native = Join-Path $env:GITHUB_WORKSPACE 'source\application\native'
+          $out = Join-Path $env:RUNNER_TEMP 'note9-native-tests'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /WX "/Fe:$(Join-Path $out 'dsp.exe')" (Join-Path $native 'tests\native_dsp_chain_test.cpp')
+          if ($LASTEXITCODE -ne 0) { throw 'Native DSP compile failed' }
+          & (Join-Path $out 'dsp.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native DSP test failed' }
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /WX "/Fe:$(Join-Path $out 'engine.exe')" (Join-Path $native 'tests\native_audio_engine_test.cpp') (Join-Path $native 'native_audio_engine.cpp')
+          if ($LASTEXITCODE -ne 0) { throw 'Native engine compile failed' }
+          & (Join-Path $out 'engine.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native engine test failed' }
+          & cl.exe /nologo /std:c++20 /EHsc /W4 /WX "/Fe:$(Join-Path $out 'session.exe')" (Join-Path $native 'tests\native_session_test.cpp') (Join-Path $native 'native_session.cpp') (Join-Path $native 'native_audio_engine.cpp')
+          if ($LASTEXITCODE -ne 0) { throw 'Native session compile failed' }
+          & (Join-Path $out 'session.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native session test failed' }
+          'PASS: native DSP, engine, and session host tests'
+
+      - name: Prepare Android SDK and NDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
+          if (-not $sdk) { throw 'Android SDK root is absent on runner' }
+          $manager = Get-Command sdkmanager.bat -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $manager) {
+            $manager = Get-ChildItem (Join-Path $sdk 'cmdline-tools') -Recurse -Filter sdkmanager.bat -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $manager) { throw 'sdkmanager.bat is absent on runner' }
+          $managerPath = if ($manager.Source) { $manager.Source } else { $manager.FullName }
+          & $managerPath --sdk_root=$sdk '--install' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;29.0.14206865'
+          if ($LASTEXITCODE -ne 0) { throw "Android SDK install failed: $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $sdk 'ndk\29.0.14206865\build\cmake\android.toolchain.cmake'))) { throw 'NDK toolchain missing' }
+          "ANDROID_SDK_ROOT=$sdk" >> $env:GITHUB_ENV
+
+      - name: Prepare pinned ONNX and LiteRT dependencies
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File source/application/scripts/prepare-ci-deps.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Model dependency preparation failed: $LASTEXITCODE" }
+
+      - name: Build pinned official llama Android JNI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llamaRevision = '4b2a4778f81f222c12271ce3b1997990b3071faf'
+          $llamaRoot = Join-Path $env:RUNNER_TEMP 'llama-cpp'
+          git clone --filter=blob:none --no-checkout https://github.com/ggml-org/llama.cpp.git $llamaRoot
+          if ($LASTEXITCODE -ne 0) { throw 'llama.cpp clone failed' }
+          git -C $llamaRoot fetch --depth=1 origin $llamaRevision
+          if ($LASTEXITCODE -ne 0) { throw 'llama.cpp revision fetch failed' }
+          git -C $llamaRoot checkout --detach $llamaRevision
+          if ($LASTEXITCODE -ne 0 -or (git -C $llamaRoot rev-parse HEAD).Trim() -ne $llamaRevision) { throw 'llama.cpp revision mismatch' }
+          $out = Join-Path $env:GITHUB_WORKSPACE 'source\build\note9-llama-jni'
+          $toolchain = Join-Path $env:ANDROID_SDK_ROOT 'ndk\29.0.14206865\build\cmake\android.toolchain.cmake'
+          $commonInclude = (Join-Path $llamaRoot 'common').Replace('\', '/')
+          cmake.exe -S (Join-Path $llamaRoot 'examples\llama.android\llama\src\main\cpp') -B $out -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$toolchain" '-DANDROID_ABI=arm64-v8a' '-DANDROID_PLATFORM=android-26' '-DCMAKE_BUILD_TYPE=Release' '-DGGML_OPENMP=OFF' '-DLLAMA_BUILD_COMMON=ON' '-DLLAMA_CURL=OFF' "-DCMAKE_CXX_FLAGS=-I$commonInclude"
+          if ($LASTEXITCODE -ne 0) { throw "llama JNI configure failed: $LASTEXITCODE" }
+          cmake.exe --build $out --target llama-android --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw "llama JNI build failed: $LASTEXITCODE" }
+
+      - name: Build debug signed Note9 audio APK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & pwsh -NoProfile -File source/application/build.ps1 -OutputName note9-audio-candidate-debug.apk
+          if ($LASTEXITCODE -ne 0) { throw "APK build failed: $LASTEXITCODE" }
+
+      - name: Verify APK identity and archive candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $apk = 'source/application/build/story-orchestrator/note9-audio-candidate-debug.apk'
+          if (-not (Test-Path $apk) -or (Get-Item $apk).Length -eq 0) { throw 'Built APK missing or empty' }
+          $tools = Join-Path $env:ANDROID_SDK_ROOT 'build-tools\36.0.0'
+          & (Join-Path $tools 'apksigner.bat') verify --verbose --print-certs $apk
+          if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed' }
+          $badging = & (Join-Path $tools 'aapt.exe') dump badging $apk
+          if ($LASTEXITCODE -ne 0) { throw 'APK package inspection failed' }
+          $packageLine = $badging | Select-String '^package:' | Select-Object -First 1
+          if (-not $packageLine -or $packageLine.Line -notmatch "name='com\.note9\.uac2' versionCode='1' versionName='0\.1\.0-audio\.p0'") { throw "Unexpected package identity or version: $packageLine" }
+          $badging | Select-String '^package:|^native-code:'
+          $sha = (Get-FileHash $apk -Algorithm SHA256).Hash
+          "SOURCE_SHA=$env:SOURCE_SHA" >> $env:GITHUB_STEP_SUMMARY
+          'AUDIO_SOURCE_CONTRACTS=PASS' >> $env:GITHUB_STEP_SUMMARY
+          'NATIVE_HOST_TESTS=PASS' >> $env:GITHUB_STEP_SUMMARY
+          'ANDROID_APK=DEBUG_BUILD_VERIFIED' >> $env:GITHUB_STEP_SUMMARY
+          "APK_SHA256=$sha" >> $env:GITHUB_STEP_SUMMARY
+          'NOTE9_DEVICE_TEST=NOT_RUN' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload debug candidate APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: note9-audio-candidate-debug-apk
+          path: source/application/build/story-orchestrator/note9-audio-candidate-debug.apk
+          if-no-files-found: error
+          retention-days: 3
