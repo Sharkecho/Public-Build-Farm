@@ -99,7 +99,7 @@ jobs:
           _get_repo omr-work/omr/feeds/$K/packages https://github.com/openwrt/packages 42be0c979ddb3a39861df1f722fef62a60158f86
           _get_repo omr-work/omr/feeds/$K/luci     https://github.com/openwrt/luci     a3cc0e14419c96ca74578b792d306cba017b9e6d
           _get_repo omr-work/omr/feeds/$K/routing  https://github.com/openwrt/routing  c7872431105f69894201dc522b7560e47d1e8ba9
-          _get_repo omr-work/omr/feeds/openmptcprouter https://github.com/ysurac/openmptcprouter-feeds develop
+          git clone --depth 1 --branch develop https://github.com/ysurac/openmptcprouter-feeds omr-work/omr/feeds/openmptcprouter
 
       - name: Build prep (OMR build.sh, ONLY_PREPARE)
         env:
