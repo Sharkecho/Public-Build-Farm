@@ -111,6 +111,12 @@ jobs:
           export OMR_KERNEL="${{ inputs.omr_kernel }}"
           ONLY_PREPARE=yes ./build.sh
 
+      - name: defconfig
+        run: |
+          set -eux
+          SRC="omr-work/omr/${OMR_TARGET}/${{ inputs.omr_kernel }}/source"
+          make -C "$SRC" defconfig
+
       - name: Build host tools + cross toolchain
         run: |
           set -eux
