@@ -1,11 +1,9 @@
 name: MT3000 single-package build (mqvpn + FEC)
 # Build ONE package ipk against a chosen OMR release, without building the full image.
-# Use case: device runs OMR v0.64.2-6.18; its shipped mqvpn/xquic lacks FEC
-# ("FEC enabled in config but unavailable in this xquic build"). The openmptcprouter
-# feed's mqvpn Makefile already sets XQC_ENABLE_FEC=ON, so building the current feed
-# package against the matching toolchain yields a FEC-capable /usr/sbin/mqvpn binary.
-# The artifact is a single .ipk - deployment is a one-file binary swap, no reflash,
-# no config change.
+# NOTE: OMR build.sh with ONLY_PREPARE=yes does NOT clone the kernel/feed trees
+# (the _get_repo block is guarded). We clone them explicitly at the pins that
+# build.sh itself uses for OMR_KERNEL=6.18 @ v0.64.2, then run ONLY_PREPARE so
+# it applies its patches/config/feeds logic on top.
 
 on:
   workflow_dispatch:
@@ -36,7 +34,6 @@ permissions:
 env:
   OMR_TARGET: gl-mt3000
   GIT_TERMINAL_PROMPT: "0"
-  RUNNER_LABEL: ubuntu-22.04
 
 jobs:
   build-package:
@@ -77,6 +74,33 @@ jobs:
             https://github.com/Ysurac/openmptcprouter omr-work/omr
           git -C omr-work/omr rev-parse HEAD
 
+      - name: Clone openwrt + feeds at build.sh's pins for this kernel
+        run: |
+          set -eux
+          mkdir -p omr-work/omr/gl-mt3000/${{ inputs.omr_kernel }}/source \
+                   omr-work/omr/feeds/${{ inputs.omr_kernel }}
+          # pins below mirror build.sh @ v0.64.2, OMR_KERNEL=6.18 branch
+          _get_repo() {
+            mkdir -p "$1"; cd "$1"
+            [ -d .git ] || git init
+            git remote add origin "$2" 2>/dev/null || git remote set-url origin "$2"
+            git fetch origin -f
+            git checkout -f "$3" -B build
+            cd - >/dev/null
+          }
+          K=${{ inputs.omr_kernel }}
+          SRC=omr-work/omr/gl-mt3000/$K/source
+          git clone --filter=blob:none https://github.com/openwrt/openwrt "$SRC/openwrt-tmp"
+          mv "$SRC/openwrt-tmp"/* "$SRC/openwrt-tmp"/.[!.]* "$SRC/" 2>/dev/null || true
+          rmdir "$SRC/openwrt-tmp"
+          git -C "$SRC" remote add origin https://github.com/openwrt/openwrt 2>/dev/null || true
+          git -C "$SRC" fetch origin -f
+          git -C "$SRC" checkout -f c0e9507c32f5f3729b324fe27308a9a63007f6c0 -B build
+          _get_repo omr-work/omr/feeds/$K/packages https://github.com/openwrt/packages 42be0c979ddb3a39861df1f722fef62a60158f86
+          _get_repo omr-work/omr/feeds/$K/luci     https://github.com/openwrt/luci     a3cc0e14419c96ca74578b792d306cba017b9e6d
+          _get_repo omr-work/omr/feeds/$K/routing  https://github.com/openwrt/routing  c7872431105f69894201dc522b7560e47d1e8ba9
+          _get_repo omr-work/omr/feeds/openmptcprouter https://github.com/ysurac/openmptcprouter-feeds develop
+
       - name: Build prep (OMR build.sh, ONLY_PREPARE)
         env:
           OMR_FEED: feeds/openmptcprouter
@@ -86,13 +110,6 @@ jobs:
           export OMR_RELEASE="${{ inputs.omr_ref }}"
           export OMR_KERNEL="${{ inputs.omr_kernel }}"
           ONLY_PREPARE=yes ./build.sh
-
-      - name: defconfig
-        run: |
-          set -eux
-          SRC="omr-work/omr/${OMR_TARGET}/${{ inputs.omr_kernel }}/source"
-          make -C "$SRC" defconfig
-          grep -q 'CONFIG_PACKAGE_mqvpn' "$SRC/.config" || echo "mqvpn not in defconfig (feed package, will build explicitly)"
 
       - name: Build host tools + cross toolchain
         run: |
