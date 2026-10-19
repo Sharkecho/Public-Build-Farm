@@ -1,0 +1,142 @@
+name: MT3000 single-package build (mqvpn + FEC)
+# Build ONE package ipk against a chosen OMR release, without building the full image.
+# Use case: device runs OMR v0.64.2-6.18; its shipped mqvpn/xquic lacks FEC
+# ("FEC enabled in config but unavailable in this xquic build"). The openmptcprouter
+# feed's mqvpn Makefile already sets XQC_ENABLE_FEC=ON, so building the current feed
+# package against the matching toolchain yields a FEC-capable /usr/sbin/mqvpn binary.
+# The artifact is a single .ipk - deployment is a one-file binary swap, no reflash,
+# no config change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      omr_ref:
+        description: "Ysurac/openmptcprouter tag/branch (must match the device: v0.64.2)"
+        required: true
+        default: "v0.64.2"
+        type: string
+      omr_kernel:
+        description: "OMR_KERNEL the device runs"
+        required: true
+        default: "6.18"
+        type: string
+      package:
+        description: "feed package to build"
+        required: true
+        default: "mqvpn"
+        type: string
+
+concurrency:
+  group: mt3000-pkg-${{ inputs.package }}-${{ inputs.omr_ref }}-${{ inputs.omr_kernel }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  OMR_TARGET: gl-mt3000
+  GIT_TERMINAL_PROMPT: "0"
+  RUNNER_LABEL: ubuntu-22.04
+
+jobs:
+  build-package:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - name: Free disk space
+        run: |
+          echo "== before =="; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android \
+                      /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+                      /usr/local/share/boost /usr/local/share/chromium \
+                      /usr/local/lib/node_modules /opt/microsoft/msedge \
+                      /usr/share/miniconda /usr/share/firefox /opt/az || true
+          sudo find /opt/hostedtoolcache -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+          sudo docker image prune -af || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          echo "== after =="; df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync scons squashfs-tools subversion swig texinfo \
+            unzip help2man zlib1g-dev libelf-dev file wget curl quilt patch ccache time zstd
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: omr-work/dl
+          key: omr-dl-${{ inputs.omr_ref }}-${{ inputs.omr_kernel }}
+
+      - name: Checkout OMR at the device-matching ref
+        run: |
+          set -eux
+          git clone --depth 1 --branch "${{ inputs.omr_ref }}" \
+            https://github.com/Ysurac/openmptcprouter omr-work/omr
+          git -C omr-work/omr rev-parse HEAD
+
+      - name: Build prep (OMR build.sh, ONLY_PREPARE)
+        env:
+          OMR_FEED: feeds/openmptcprouter
+          OMR_LOG: "yes"
+        run: |
+          cd omr-work/omr
+          export OMR_RELEASE="${{ inputs.omr_ref }}"
+          export OMR_KERNEL="${{ inputs.omr_kernel }}"
+          ONLY_PREPARE=yes ./build.sh
+
+      - name: defconfig
+        run: |
+          set -eux
+          SRC="omr-work/omr/${OMR_TARGET}/${{ inputs.omr_kernel }}/source"
+          make -C "$SRC" defconfig
+          grep -q 'CONFIG_PACKAGE_mqvpn' "$SRC/.config" || echo "mqvpn not in defconfig (feed package, will build explicitly)"
+
+      - name: Build host tools + cross toolchain
+        run: |
+          set -eux
+          SRC="omr-work/omr/${OMR_TARGET}/${{ inputs.omr_kernel }}/source"
+          ( cd "$SRC" && make -j"$(( $(nproc) + 1 ))" IGNORE_ERRORS=m tools/install ) > host-tools.log 2>&1 \
+            || { tail -n 200 host-tools.log; exit 1; }
+          ( cd "$SRC" && make -j"$(( $(nproc) + 1 ))" IGNORE_ERRORS=m toolchain/install ) > toolchain.log 2>&1 \
+            || { tail -n 200 toolchain.log; exit 1; }
+          ls "$SRC"/staging_dir/toolchain-*/bin/*-gcc >/dev/null
+
+      - name: Build the package
+        run: |
+          set -eux
+          SRC="omr-work/omr/${OMR_TARGET}/${{ inputs.omr_kernel }}/source"
+          ( cd "$SRC" && make -j"$(( $(nproc) + 1 ))" \
+              "package/feeds/openmptcprouter/${{ inputs.package }}/compile" ) > pkg-build.log 2>&1 \
+            || { tail -n 300 pkg-build.log; exit 1; }
+          tail -n 10 pkg-build.log
+
+      - name: Locate artifact + checksums
+        run: |
+          set -eux
+          SRC="omr-work/omr/${OMR_TARGET}/${{ inputs.omr_kernel }}/source"
+          OUT="omr-work/omr/${OMR_TARGET}/${{ inputs.omr_kernel }}/source/bin/packages/aarch64_cortex-a53"
+          mkdir -p dist
+          find "$OUT" -name "${{ inputs.package }}_*.ipk" -exec cp {} dist/ \;
+          ls -l dist/
+          ( cd dist && sha256sum *.ipk > sha256sums )
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt3000-pkg-${{ inputs.package }}-${{ inputs.omr_ref }}-run${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-build-logs-${{ github.run_id }}
+          path: |
+            host-tools.log
+            toolchain.log
+            pkg-build.log
+          if-no-files-found: ignore
