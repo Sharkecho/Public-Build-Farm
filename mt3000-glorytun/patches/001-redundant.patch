@@ -38,29 +38,7 @@
 +        for (unsigned i = 0; i < mud->count; i++) {
 +            struct mud_path *alt = &mud->paths[i];
 +
-+            /* Judge a leg by its state and MTU, not by its `ok` flag.
-+             *
-+             * `ok` is cleared at the top of every mud_update() tick and set
-+             * again only when that leg's probe messages are being answered:
-+             *
-+             *     if (path->msg.sent >= MUD_MSG_SENT_MAX) { ... }  <- no ok
-+             *     else if (mud_path_is_ok(mud, path)) path->ok = 1;
-+             *
-+             * A leg whose carrier NAT mapping is lossy sits at msg.sent == 5
-+             * permanently, so its `ok` never becomes 1 and duplication skips it
-+             * for ever. Measured 2026-10-24 on the iPhone leg: state UP, mtu.ok
-+             * 1472, tx.loss 0, yet path->ok == 0 (printed as DEGRADED) and the
-+             * eth0:eth2 packet ratio was 11.7:1 instead of 1:1.
-+             *
-+             * That leg is precisely why redundancy exists: its probes are
-+             * unreliable, its data path still carries packets. Sending the copy
-+             * anyway costs bandwidth when the leg is dead, but the receiver
-+             * dedups, so it can never cost correctness.
-+             */
-+            if (alt == path)
-+                continue;
-+
-+            if (alt->state < MUD_UP || !alt->mtu.ok)
++            if (alt == path || !alt->ok)
 +                continue;
 +
 +            mud_send_path(mud, alt, now, packet, packet_size, 0);

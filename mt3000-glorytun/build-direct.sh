@@ -199,6 +199,9 @@ if [ "$APPLY_PATCH" = "1" ]; then
     echo "--- 003: sequence + dedup ---"
     python3 "$PATCHDIR/003-sequence.py" --src "$GTSRC/mud/mud.c" || die "003 failed"
 
+echo "--- 004: duplication condition ---"
+python3 "$PATCHDIR/004-dup-condition.py" --src "$GTSRC/mud/mud.c" || die "004 failed"
+
     echo "--- verify all three landed ---"
     for s in mud_redundant_enabled '/tmp/mud-redundant' MUD_SEQ_WINDOW MUD_SEQ_RESYNC; do
         n=$(grep -c -- "$s" "$GTSRC/mud/mud.c" || true)
