@@ -85,6 +85,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "seed .config (without this, every package target runs menuconfig)"
+# ---------------------------------------------------------------------------
+# The SDK has no .config on first use. Any `make package/X/...` target then
+# falls into `menuconfig`, which needs a terminal -- and CI has none:
+#
+#   Error opening terminal: unknown.
+#   make[1]: *** [include/toplevel.mk:95: .config] Error 2
+#
+# `make defconfig` generates a valid default .config non-interactively, which
+# is all a single-package build needs. Package selection is implicit: naming
+# `package/glorytun/compile` pulls in the package and its dependencies.
+if [ ! -f .config ]; then
+    make defconfig
+else
+    echo "already present"
+fi
+
+# ---------------------------------------------------------------------------
 say "glorytun package source"
 # ---------------------------------------------------------------------------
 PKG="package/glorytun"
