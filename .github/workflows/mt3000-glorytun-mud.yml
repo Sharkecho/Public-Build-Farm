@@ -1,0 +1,112 @@
+name: MT3000 glorytun mud (aarch64 musl)
+
+# Cross-compiles glorytun + patch 003 with the OpenWrt SDK and uploads the ipk
+# as an artifact.
+#
+# Why this exists: the GL-MT3000 cannot compile natively (no gcc/make/binutils/
+# libsodium-dev in the packages feed), and the local WSL on the operator's
+# machine is unreliable. A hosted runner is a clean, reproducible musl cross
+# environment, and the resulting ipk is downloaded rather than hand-built.
+#
+# Boundaries, deliberately respected:
+#   * This repository is private. Nothing is published from here.
+#   * angt/glorytun is third-party. This workflow only CLONES it read-only at a
+#     pinned commit. Changes live as patches in this repo (patches/003-*.py),
+#     never as commits pushed upstream.
+#   * No secrets are required: the key file is not used by the build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_patch:
+        description: "Apply patch 003 (sequence + dedup)"
+        type: boolean
+        default: true
+      sdk_version:
+        description: "OpenWrt SDK release"
+        default: "23.05.5"
+      sdk_target:
+        description: "SDK target (mediatek/filogic for GL-MT3000)"
+        default: "mediatek/filogic"
+  push:
+    paths:
+      - "mt3000-glorytun/**"
+      - ".github/workflows/build-glorytun.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host info
+        run: |
+          uname -a
+          nproc
+          free -h
+          df -h /
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential gawk gettext \
+            libncurses5-dev libncursesw5-dev zlib1g-dev file wget rsync \
+            python3 unzip xsltproc
+
+      # build-sdk.sh downloads, extracts, sets up feeds, writes the package
+      # Makefile, fetches, optionally patches, compiles and collects the ipk.
+      - name: Build
+        env:
+          WORK: ${{ github.workspace }}/owrt-work
+          SDK_VER: ${{ inputs.sdk_version || '23.05.5' }}
+          SDK_TARGET: ${{ inputs.sdk_target || 'mediatek/filogic' }}
+          PATCHER: ${{ github.workspace }}/mt3000-glorytun/patches/003-sequence.py
+        run: |
+          set -eu
+          cd mt3000-glorytun
+          chmod +x build-sdk.sh
+
+          if [ "${{ inputs.apply_patch }}" = "false" ]; then
+            echo "=== stock build (toolchain smoke test, no patch) ==="
+            sh ./build-sdk.sh --no-patch
+          else
+            echo "=== patched build (patch 003) ==="
+            sh ./build-sdk.sh
+          fi
+
+      - name: Show what was produced
+        if: always()
+        run: |
+          set +e
+          W="${{ github.workspace }}/owrt-work"
+          echo "--- work dir ---"
+          ls -la "$W" 2>/dev/null
+          echo "--- ipk ---"
+          find "$W" -name '*.ipk' -exec ls -la {} \; 2>/dev/null
+          find "$W" -name '*.ipk' -exec md5sum {} \; 2>/dev/null
+          echo "--- extracted binary ---"
+          find "$W/x" -type f -name glorytun -exec ls -la {} \; 2>/dev/null
+          find "$W/x" -type f -name glorytun -exec sh -c 'strings "$1" | grep -m3 "ld-musl\|GCC:"' _ {} \; 2>/dev/null
+
+      - name: Upload ipk
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glorytun-aarch64-ipk
+          path: ${{ github.workspace }}/owrt-work/*.ipk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ github.workspace }}/owrt-work/**/*.log
+            ${{ github.workspace }}/owrt-work/**/build_dir/**/.config
+          if-no-files-found: warn
+          retention-days: 7
