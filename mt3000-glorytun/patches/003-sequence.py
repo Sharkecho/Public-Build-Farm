@@ -297,12 +297,21 @@ def patch(path):
     if "MUD_SEQ_WINDOW" in src:
         print("  seq block already present")
     else:
-        m = re.search(r"^int\nmud_send\(struct mud", src, re.M)
+        # Placement matters. The block defines MUD_SEQ_SIZE, mud_seq_load()
+        # and mud_seq_accept(), and mud_recv() -- which uses all three -- comes
+        # BEFORE mud_send() in this file. Anchoring on mud_send put the
+        # definitions after their first use, and the compiler said so:
+        #
+        #   mud/mud.c:1403: error: 'MUD_SEQ_SIZE' undeclared
+        #   mud/mud.c:1649: error: conflicting types for 'mud_seq_load'
+        #   mud/mud.c:1672: error: static declaration of 'mud_seq_accept'
+        #                     follows non-static declaration
+        #
+        # Anchor on the constant block instead: it sits above every function.
+        m = re.search(r"^#define MUD_MTU_MAX[^\n]*\n", src, re.M)
         if not m:
-            m = re.search(r"^mud_send\(struct mud", src, re.M)
-        if not m:
-            sys.exit("cannot find mud_send to anchor the seq block")
-        src = src[:m.start()] + SEQ_BLOCK + src[m.start():]
+            sys.exit("cannot find MUD_MTU_MAX to anchor the seq block")
+        src = src[:m.end()] + SEQ_BLOCK + src[m.end():]
         changed.append("seq block")
 
     # 2. send
