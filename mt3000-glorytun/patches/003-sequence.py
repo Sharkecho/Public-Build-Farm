@@ -90,6 +90,8 @@ struct mud_seq {
     uint64_t seen;                      /* dropped: already delivered */
     uint64_t outside;                   /* dropped: outside the window */
     uint64_t resync;                    /* times the window was realigned */
+    uint64_t last_good;                 /* when an in-window packet was accepted */
+    unsigned char seeded;               /* an in-window packet has been accepted */
     unsigned char streak;               /* consecutive out-of-window packets */
 };
 
@@ -125,10 +127,11 @@ mud_seq_load(const unsigned char *p)
  *   4. insert
  *   5. advance base over the contiguous run, which now includes step 4
  */
-#define MUD_SEQ_RESYNC  4   /* consecutive outsiders before realigning */
+#define MUD_SEQ_RESYNC  4        /* consecutive outsiders before realigning */
+#define MUD_SEQ_RESYNC_MS 1000   /* ...or one outsider after this long silent */
 
 static int
-mud_seq_accept(struct mud_seq *s, uint64_t seq)
+mud_seq_accept(struct mud_seq *s, uint64_t seq, uint64_t now)
 {
     if (!seq)
         return 0;
@@ -164,17 +167,46 @@ mud_seq_accept(struct mud_seq *s, uint64_t seq)
     if (seq <= s->base || seq > s->base + MUD_SEQ_WINDOW) {
         s->outside++;
 
-        if (++s->streak >= MUD_SEQ_RESYNC) {
+        /* Two triggers, whichever comes first.
+         *
+         * Counting packets alone is too slow for low-rate traffic. A ping at
+         * 1 pkt/s needs four seconds to reach the threshold; a TCP connect that
+         * happens to land in that gap just hangs. Measured 2026-10-24: after
+         * eth2 was taken down and its path pruned, ping to the peer stayed at
+         * 0% loss while curl through the tunnel returned nothing.
+         *
+         * The second trigger covers it: if nothing in-window has been accepted
+         * for MUD_SEQ_RESYNC_MS, a single outsider is enough. In steady state
+         * that condition is false, so a stray packet still cannot move the
+         * window -- the packet-count trigger stays in charge.
+         */
+        const int by_count = (++s->streak >= MUD_SEQ_RESYNC);
+
+        /* by_time must not be gated on last_good != 0: a receiver that has
+         * accepted nothing yet would never satisfy it, and that is exactly the
+         * path-rebuild case. Track seeding explicitly instead. */
+        const int by_time = (s->seeded &&
+                             (MUD_TIME_MASK(now - s->last_good) > MUD_SEQ_RESYNC_MS * MUD_ONE_MSEC));
+
+        /* Nothing accepted yet and the very first packet is already outside the
+         * window: with base = 0 that can only mean the peer is far ahead. */
+        const int by_fresh = (!s->seeded && seq > s->base + MUD_SEQ_WINDOW);
+
+        if (by_count || by_time || by_fresh) {
             s->resync++;
             s->base = seq - 1;
             memset(s->slot, 0, sizeof(s->slot));
             s->streak = 0;
+            s->last_good = now;
+            s->seeded = 1;
             /* fall through and accept this packet */
         } else {
             return 0;
         }
     } else {
         s->streak = 0;
+        s->last_good = now;
+        s->seeded = 1;
     }
 
     const uint64_t off = seq % MUD_SEQ_WINDOW;
@@ -281,7 +313,7 @@ RECV_ANCHOR_NEW = """    struct mud_path *path = mud_get_path(mud, &local_addr, 
         unsigned char *payload = (unsigned char *)data;
         const uint64_t seq = mud_seq_load(payload);
 
-        if (!mud_seq_accept(&mud->seq, seq))
+        if (!mud_seq_accept(&mud->seq, seq, now))
             return 0;
 
         memmove(payload, payload + MUD_SEQ_SIZE, ret - MUD_SEQ_SIZE);
