@@ -27,9 +27,40 @@ set -eu
 WORK="${WORK:-/tmp/owrt-build}"
 SDK_VER="${SDK_VER:-23.05.5}"
 SDK_TARGET="${SDK_TARGET:-mediatek/filogic}"
-SDK_GCC="${SDK_GCC:-12.3.0}"
-SDK_NAME="openwrt-sdk-${SDK_VER}-$(echo "$SDK_TARGET" | tr '/' '-')_gcc-${SDK_GCC}_musl.Linux-x86_64"
-SDK_URL="https://downloads.openwrt.org/releases/${SDK_VER}/targets/${SDK_TARGET}/${SDK_NAME}.tar.xz"
+
+# The SDK file name changes between release branches, so derive it rather than
+# hardcode it. Verified against downloads.openwrt.org on 2026-10-24:
+#
+#   23.05.x -> gcc-12.3.0, .tar.xz
+#   24.10.x -> gcc-13.3.0, .tar.zst     (both changed at once)
+#   25.12.x -> gcc-13.3.0, .tar.zst
+#
+# Hardcoding 12.3.0 + .xz made the 24.10.8 build die on a 404 twenty seconds in.
+case "$SDK_VER" in
+    23.05.*) SDK_GCC="${SDK_GCC:-12.3.0}" ;;
+    *)       SDK_GCC="${SDK_GCC:-13.3.0}" ;;
+esac
+
+SDK_BASE="openwrt-sdk-${SDK_VER}-$(echo "$SDK_TARGET" | tr '/' '-')_gcc-${SDK_GCC}_musl.Linux-x86_64"
+SDK_URL_BASE="https://downloads.openwrt.org/releases/${SDK_VER}/targets/${SDK_TARGET}/${SDK_BASE}"
+
+# Prefer zst (current), fall back to xz (older branches).
+if [ -n "${SDK_EXT:-}" ]; then
+    SDK_EXT="$SDK_EXT"
+    SDK_URL="${SDK_URL_BASE}.tar.${SDK_EXT}"
+else
+    SDK_EXT=xz
+    SDK_URL="${SDK_URL_BASE}.tar.xz"
+    for e in zst xz; do
+        if wget -q --spider "${SDK_URL_BASE}.tar.${e}" 2>/dev/null; then
+            SDK_EXT="$e"
+            SDK_URL="${SDK_URL_BASE}.tar.${e}"
+            break
+        fi
+    done
+fi
+SDK_NAME="$SDK_BASE"
+echo "SDK: ${SDK_URL}"
 
 # glorytun upstream: angt/glorytun (the REAL multipath project), NOT Ysurac/glorytun
 GT_REPO="https://github.com/angt/glorytun.git"
@@ -50,7 +81,12 @@ die() { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 say "checking host tools"
-for t in wget tar xz make gcc g++ git patch; do need "$t"; echo "  $t ok"; done
+for t in wget tar make gcc g++ git patch; do need "$t"; echo "  $t ok"; done
+# xz for 23.05 SDKs, zstd for 24.10+. Both are cheap; missing one only matters
+# for the branch that needs it, so warn rather than die.
+for t in xz zstd; do
+    if command -v "$t" >/dev/null 2>&1; then echo "  $t ok"; else echo "  $t MISSING (needed for some SDK versions)"; fi
+done
 
 mkdir -p "$WORK"
 cd "$WORK"
@@ -59,13 +95,18 @@ cd "$WORK"
 say "OpenWrt SDK ${SDK_VER} (${SDK_TARGET}, gcc ${SDK_GCC}, musl)"
 # ---------------------------------------------------------------------------
 if [ ! -d "$SDK_NAME" ]; then
-    if [ ! -f "${SDK_NAME}.tar.xz" ]; then
+    TARBALL="${SDK_NAME}.tar.${SDK_EXT}"
+    if [ ! -s "$TARBALL" ]; then
         echo "downloading ${SDK_URL}"
-        wget -O "${SDK_NAME}.tar.xz.part" "$SDK_URL"
-        mv "${SDK_NAME}.tar.xz.part" "${SDK_NAME}.tar.xz"
+        wget -O "${TARBALL}.part" "$SDK_URL" || die "SDK download failed: ${SDK_URL}"
+        [ -s "${TARBALL}.part" ] || die "downloaded file is empty"
+        mv "${TARBALL}.part" "$TARBALL"
     fi
     echo "extracting (this takes a minute)"
-    tar xf "${SDK_NAME}.tar.xz"
+    case "$SDK_EXT" in
+        zst) tar --zstd -xf "$TARBALL" ;;
+        *)   tar xf "$TARBALL" ;;
+    esac
 else
     echo "already extracted"
 fi
