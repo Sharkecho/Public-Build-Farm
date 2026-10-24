@@ -1,0 +1,49 @@
+--- a/mud/mud.c
++++ b/mud/mud.c
+@@ -1578,6 +1578,26 @@
+     return mud->window < 1500;
+ }
+ 
++/* ---- MT3000 patch: redundant (Speedify-style) send mode -------------------
++ * When MUD_REDUNDANT=1 every IP packet is transmitted on all healthy paths
++ * instead of the single scheduler-selected one. The receiver's reorder buffer
++ * already keys on the packet sequence number, so the duplicate copies are
++ * dropped there. Cost: 2x tunnel bandwidth. Benefit: no path switch, no
++ * reordering stall 鈥?whichever copy arrives first is the one that counts.
++ */
++static int
++mud_redundant_enabled(void)
++{
++    static int cached = -1;
++
++    if (cached < 0) {
++        const char *env = getenv("MUD_REDUNDANT");
++        cached = (env && env[0] == '1') ? 1 : 0;
++    }
++
++    return cached;
++}
++
+ int
+ mud_send(struct mud *mud, const void *data, size_t size)
+ {
+@@ -1611,5 +1631,18 @@
+ 
+     path->idle = now;
+ 
+-    return mud_send_path(mud, path, now, packet, packet_size, 0);
++    int ret = mud_send_path(mud, path, now, packet, packet_size, 0);
++
++    if (mud_redundant_enabled()) {
++        for (unsigned i = 0; i < mud->count; i++) {
++            struct mud_path *alt = &mud->paths[i];
++
++            if (alt == path || !alt->ok)
++                continue;
++
++            mud_send_path(mud, alt, now, packet, packet_size, 0);
++        }
++    }
++
++    return ret;
+ }

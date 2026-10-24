@@ -152,17 +152,60 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "patch 003"
+say "patches 001 + 002 + 003"
 # ---------------------------------------------------------------------------
+#
+# All three, in this order. They are not independent:
+#
+#   001-redundant.patch   adds the loop in mud_send() that sends every packet
+#                         on all healthy paths. Without 003 this delivers
+#                         duplicates to the tun, which is why it was disabled.
+#   002-runtime-redundant.py
+#                         turns the MUD_REDUNDANT env flag into a runtime
+#                         switch (/tmp/mud-redundant), so duplication can be
+#                         toggled without restarting the tunnel.
+#   003-sequence.py       adds the 8-byte sequence + receive-side dedup window,
+#                         which is what makes 001 safe: the second copy is now
+#                         recognisable and dropped.
+#
+# Shipping 003 alone -- which is what happened on 2026-10-24 -- produces a
+# binary with dedup but no duplication, i.e. the means without the purpose.
+#
+PATCHDIR=""
+if [ -z "${PATCHER:-}" ]; then
+    case "$0" in
+        */*) PATCHDIR="$(cd "$(dirname "$0")" && pwd)/patches" ;;
+        *)   PATCHDIR="./patches" ;;
+    esac
+else
+    PATCHDIR="$(dirname "$PATCHER")"
+fi
+
 if [ "$APPLY_PATCH" = "1" ]; then
-    if [ -z "${PATCHER:-}" ]; then
-        case "$0" in
-            */*) PATCHER="$(cd "$(dirname "$0")" && pwd)/patches/003-sequence.py" ;;
-            *)   PATCHER="./patches/003-sequence.py" ;;
-        esac
+    [ -d "$PATCHDIR" ] || die "patch dir not found: $PATCHDIR"
+
+    echo "--- 001: redundant send ---"
+    if grep -q 'mud_redundant_enabled' "$GTSRC/mud/mud.c"; then
+        echo "  already applied"
+    else
+        patch -p1 -d "$GTSRC" < "$PATCHDIR/001-redundant.patch" \
+            || die "001 failed to apply"
+        echo "  applied"
     fi
-    [ -f "$PATCHER" ] || die "patcher not found: $PATCHER"
-    python3 "$PATCHER" --src "$GTSRC/mud/mud.c"
+
+    echo "--- 002: runtime switch ---"
+    python3 "$PATCHDIR/002-runtime-redundant.py" --src "$GTSRC/mud/mud.c" || die "002 failed"
+
+    echo "--- 003: sequence + dedup ---"
+    python3 "$PATCHDIR/003-sequence.py" --src "$GTSRC/mud/mud.c" || die "003 failed"
+
+    echo "--- verify all three landed ---"
+    for s in mud_redundant_enabled '/tmp/mud-redundant' MUD_SEQ_WINDOW MUD_SEQ_RESYNC; do
+        n=$(grep -c -- "$s" "$GTSRC/mud/mud.c" || true)
+        printf "  %-24s %s
+" "$s" "$n"
+        [ "$n" -gt 0 ] || die "expected '$s' in mud.c but found none"
+    done
 else
     echo "skipped (--no-patch)"
 fi
