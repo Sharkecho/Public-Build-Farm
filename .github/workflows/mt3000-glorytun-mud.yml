@@ -75,6 +75,11 @@ jobs:
           cd mt3000-glorytun
 
           MODE="${{ inputs.build_mode }}"
+          # direct mode keeps its tree separate so artifact globs do not collide
+          if [ "$MODE" = "direct" ]; then
+            export WORK="${{ github.workspace }}/owrt-direct"
+            export WORK_DIRECT="$WORK"
+          fi
           PATCH="${{ inputs.apply_patch }}"
 
           if [ "$MODE" = "direct" ]; then

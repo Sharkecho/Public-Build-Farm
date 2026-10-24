@@ -57,8 +57,15 @@ SDK="$WORK/$SDK_BASE"
 
 if [ ! -d "$SDK" ]; then
     # Reuse whatever build-sdk.sh already downloaded, if anything.
-    if [ -d "$WORK/../owrt-work/$SDK_BASE" ]; then
-        SDK="$WORK/../owrt-work/$SDK_BASE"
+    REUSE="${REUSE_SDK:-}"
+    if [ -z "$REUSE" ] && [ -d "$WORK/../owrt-work/$SDK_BASE/staging_dir" ]; then
+        REUSE="$WORK/../owrt-work/$SDK_BASE"
+    fi
+    if [ -z "$REUSE" ] && [ -n "${WORK_DIRECT:-}" ] && [ -d "$WORK_DIRECT/../owrt-work/$SDK_BASE/staging_dir" ]; then
+        REUSE="$WORK_DIRECT/../owrt-work/$SDK_BASE"
+    fi
+    if [ -n "$REUSE" ]; then
+        SDK="$REUSE"
         echo "reusing $SDK"
     else
         for e in "$EXT" xz zst; do
@@ -110,6 +117,10 @@ if [ -f "$TARGETDIR/usr/lib/libsodium.a" ] || [ -f "$TARGETDIR/usr/lib/libsodium
 else
     echo "building libsodium from the feed (first run only)"
     cd "$SDK"
+    # The SDK tarball does not always ship host/, and toplevel.mk then dies on
+    #   touch: cannot touch 'host/.prereq-build': No such file or directory
+    # before compiling anything. Creating the directory is all it needs.
+    mkdir -p host
     [ -f .config ] || make defconfig
     ./scripts/feeds update -a
     ./scripts/feeds install libsodium
