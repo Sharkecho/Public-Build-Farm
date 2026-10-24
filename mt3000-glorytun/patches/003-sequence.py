@@ -88,7 +88,9 @@ struct mud_seq {
     uint64_t base;                      /* highest contiguous delivered */
     uint64_t slot[MUD_SEQ_WINDOW];      /* slot[n] = seq, 0 = empty */
     uint64_t seen;                      /* dropped: already delivered */
-    uint64_t far;                       /* dropped: outside the window */
+    uint64_t outside;                   /* dropped: outside the window */
+    uint64_t resync;                    /* times the window was realigned */
+    unsigned char streak;               /* consecutive out-of-window packets */
 };
 
 static inline void
@@ -123,20 +125,56 @@ mud_seq_load(const unsigned char *p)
  *   4. insert
  *   5. advance base over the contiguous run, which now includes step 4
  */
+#define MUD_SEQ_RESYNC  4   /* consecutive outsiders before realigning */
+
 static int
 mud_seq_accept(struct mud_seq *s, uint64_t seq)
 {
     if (!seq)
         return 0;
 
-    if (seq <= s->base) {
-        s->seen++;
-        return 0;
-    }
+    /* ---- resynchronisation --------------------------------------------
+     *
+     * The two counters are independent and neither is persisted. A restart
+     * on one side resets its tx to 1 and its window to 0, while the other
+     * side carries on. That produces two symmetric deadlocks, and without
+     * this block neither ever clears:
+     *
+     *   peer restarted, we did not:
+     *       its seq is far BELOW our base -> every packet looks "old"
+     *       -> dropped forever -> that direction carries no data
+     *
+     *   we restarted, peer did not:
+     *       its seq is far ABOVE base + WINDOW -> every packet looks
+     *       "outside" -> dropped forever -> that direction carries no data
+     *
+     * Both were observed on 2026-10-24 after swapping binaries: upload ran at
+     * 7.8 Mbit/s while download sat at 81 kbit/s, and ping stayed at 0% loss
+     * the whole time because measurement messages never reach this code.
+     *
+     * So: count consecutive out-of-window packets. One stray packet is
+     * noise; MUD_SEQ_RESYNC in a row cannot be noise, because the window
+     * spans ~13 s at 300 pkt/s. On reaching the threshold, realign to the
+     * current sequence and accept it.
+     *
+     * Forging this would require MUD_SEQ_RESYNC authenticated packets with
+     * chosen sequence numbers -- which needs the session key. If the key is
+     * gone, window integrity is the least of the problems.
+     */
+    if (seq <= s->base || seq > s->base + MUD_SEQ_WINDOW) {
+        s->outside++;
 
-    if (seq > s->base + MUD_SEQ_WINDOW) {
-        s->far++;
-        return 0;
+        if (++s->streak >= MUD_SEQ_RESYNC) {
+            s->resync++;
+            s->base = seq - 1;
+            memset(s->slot, 0, sizeof(s->slot));
+            s->streak = 0;
+            /* fall through and accept this packet */
+        } else {
+            return 0;
+        }
+    } else {
+        s->streak = 0;
     }
 
     const uint64_t off = seq % MUD_SEQ_WINDOW;
