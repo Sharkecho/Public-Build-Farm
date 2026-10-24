@@ -22,6 +22,11 @@ on:
         description: "Apply patch 003 (sequence + dedup)"
         type: boolean
         default: true
+      build_mode:
+        description: "direct = SDK toolchain (works on 24.10); package = OpenWrt package framework"
+        type: choice
+        options: ["direct", "package"]
+        default: "direct"
       sdk_version:
         description: "OpenWrt SDK release"
         default: "23.05.5"
@@ -61,20 +66,30 @@ jobs:
       - name: Build
         env:
           WORK: ${{ github.workspace }}/owrt-work
+          WORK_DIRECT: ${{ github.workspace }}/owrt-direct
           SDK_VER: ${{ inputs.sdk_version || '23.05.5' }}
           SDK_TARGET: ${{ inputs.sdk_target || 'mediatek/filogic' }}
           PATCHER: ${{ github.workspace }}/mt3000-glorytun/patches/003-sequence.py
         run: |
           set -eu
           cd mt3000-glorytun
-          chmod +x build-sdk.sh
 
-          if [ "${{ inputs.apply_patch }}" = "false" ]; then
-            echo "=== stock build (toolchain smoke test, no patch) ==="
-            sh ./build-sdk.sh --no-patch
+          MODE="${{ inputs.build_mode }}"
+          PATCH="${{ inputs.apply_patch }}"
+
+          if [ "$MODE" = "direct" ]; then
+            chmod +x build-direct.sh
+            if [ "$PATCH" = "false" ]; then
+              sh ./build-direct.sh --no-patch
+            else
+              sh ./build-direct.sh
+            fi
           else
-            echo "=== patched build (patch 003) ==="
-            sh ./build-sdk.sh
+            if [ "$PATCH" = "false" ]; then
+              sh ./build-sdk.sh --no-patch
+            else
+              sh ./build-sdk.sh
+            fi
           fi
 
       - name: Show what was produced
@@ -91,12 +106,14 @@ jobs:
           find "$W/x" -type f -name glorytun -exec ls -la {} \; 2>/dev/null
           find "$W/x" -type f -name glorytun -exec sh -c 'strings "$1" | grep -m3 "ld-musl\|GCC:"' _ {} \; 2>/dev/null
 
-      - name: Upload ipk
+      - name: Upload binary and ipk
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: glorytun-aarch64-ipk
-          path: ${{ github.workspace }}/owrt-work/*.ipk
+          name: glorytun-aarch64
+          path: |
+            ${{ github.workspace }}/owrt-work/*.ipk
+            ${{ github.workspace }}/owrt-direct/glorytun-aarch64
           if-no-files-found: error
           retention-days: 30
 
