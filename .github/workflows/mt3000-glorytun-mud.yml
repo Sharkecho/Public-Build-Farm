@@ -101,15 +101,21 @@ jobs:
         if: always()
         run: |
           set +e
-          W="${{ github.workspace }}/owrt-work"
-          echo "--- work dir ---"
-          ls -la "$W" 2>/dev/null
-          echo "--- ipk ---"
-          find "$W" -name '*.ipk' -exec ls -la {} \; 2>/dev/null
-          find "$W" -name '*.ipk' -exec md5sum {} \; 2>/dev/null
-          echo "--- extracted binary ---"
-          find "$W/x" -type f -name glorytun -exec ls -la {} \; 2>/dev/null
-          find "$W/x" -type f -name glorytun -exec sh -c 'strings "$1" | grep -m3 "ld-musl\|GCC:"' _ {} \; 2>/dev/null
+          # direct mode builds into owrt-direct, package mode into owrt-work.
+          for W in "${{ github.workspace }}/owrt-direct" "${{ github.workspace }}/owrt-work"; do
+            echo "--- $W ---"
+            ls -la "$W" 2>/dev/null | head -20
+            echo "--- ipk under $W ---"
+            find "$W" -name '*.ipk' -exec ls -la {} \; 2>/dev/null
+            find "$W" -name '*.ipk' -exec md5sum {} \; 2>/dev/null
+            echo "--- binary under $W ---"
+            find "$W" -maxdepth 2 -type f -name 'glorytun-aarch64' -exec ls -la {} \; 2>/dev/null
+            find "$W" -maxdepth 2 -type f -name 'glorytun-aarch64' -exec md5sum {} \; 2>/dev/null
+            find "$W" -maxdepth 2 -type f -name 'glorytun-aarch64' -exec file {} \; 2>/dev/null
+            find "$W" -maxdepth 2 -type f -name 'glorytun-aarch64' -exec sh -c 'strings "$1" | grep -m2 "ld-musl\|GCC:"' _ {} \; 2>/dev/null
+          done
+          # never fail the job from an inspection step
+          exit 0
 
       - name: Upload binary and ipk
         if: success()
@@ -117,8 +123,8 @@ jobs:
         with:
           name: glorytun-aarch64
           path: |
-            ${{ github.workspace }}/owrt-work/*.ipk
             ${{ github.workspace }}/owrt-direct/glorytun-aarch64
+            ${{ github.workspace }}/owrt-work/*.ipk
           if-no-files-found: error
           retention-days: 30
 
