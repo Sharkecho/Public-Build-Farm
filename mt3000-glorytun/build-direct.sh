@@ -170,9 +170,28 @@ fi
 # ---------------------------------------------------------------------------
 say "build"
 # ---------------------------------------------------------------------------
-# autogen/configure need the SDK's staging headers and libs.
+# autogen/configure need the SDK's staging headers, libs AND pkg-config files.
+#
+# Without PKG_CONFIG_LIBDIR, configure finds the HOST's libsodium -- or nothing:
+#   configure: error: Package requirements (libsodium >= 1.0.4) were not met
+# PKG_CONFIG_SYSROOT_DIR makes the -I/-L paths in the .pc file resolve inside
+# the staging dir instead of on the build host.
 CFLAGS="-I$TARGETDIR/usr/include -Os -pipe"
 LDFLAGS="-L$TARGETDIR/usr/lib -Wl,-rpath-link=$TARGETDIR/usr/lib"
+
+export PKG_CONFIG_PATH="$TARGETDIR/usr/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$TARGETDIR/usr/lib/pkgconfig"
+export PKG_CONFIG_SYSROOT_DIR="$TARGETDIR"
+
+echo "pkg-config:"
+echo "  PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
+ls "$TARGETDIR"/usr/lib/pkgconfig/*.pc 2>/dev/null | sed 's/^/    /' || echo "    (no .pc files)"
+if command -v pkg-config >/dev/null 2>&1; then
+    echo -n "  libsodium version: "
+    pkg-config --modversion libsodium 2>&1 || echo "(not found -- continuing anyway)"
+else
+    echo "  pkg-config missing on the host"
+fi
 
 if [ -x ./autogen.sh ]; then
     ./autogen.sh
@@ -185,7 +204,10 @@ fi
     --prefix=/usr \
     CC="$CC" \
     CFLAGS="$CFLAGS" \
-    LDFLAGS="$LDFLAGS"
+    LDFLAGS="$LDFLAGS" \
+    PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
+    PKG_CONFIG_LIBDIR="$PKG_CONFIG_LIBDIR" \
+    PKG_CONFIG_SYSROOT_DIR="$PKG_CONFIG_SYSROOT_DIR"
 
 make -j"$(nproc 2>/dev/null || echo 2)" \
     CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" 2>&1 | tail -30
