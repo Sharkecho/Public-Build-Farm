@@ -15,6 +15,10 @@ if not p.exists():
     raise SystemExit(f"not found: {p}")
 src = p.read_text(encoding="utf-8", errors="replace")
 
+if "int on = 0;" in src:
+    print("  002: already has the fixed runtime switch, skipping")
+    raise SystemExit(0)
+
 start = src.index("static int\nmud_redundant_enabled(void)")
 brace = src.index("{", start)
 depth = 0
@@ -57,14 +61,30 @@ lines = [
     "        return cached;",
     "    last = now;",
     "",
+    "    /* Recompute from scratch: the file is the only authority.",
+    "     *",
+    "     * The first version assigned cached only when fgets() succeeded, which",
+    "     * made two transitions unreachable:",
+    "     *",
+    "     *   empty file   -> fgets returns NULL -> cached keeps its old value, so",
+    "     *                   `touch /tmp/mud-redundant` never enabled duplication",
+    "     *                   (the controller created the flag with `: >`, and",
+    "     *                   duplication had never once engaged on this link);",
+    "     *   file removed -> fopen returns NULL -> cached keeps 1 for ever, so",
+    "     *                   removing the flag never disabled it either.",
+    "     *",
+    "     * Both directions stuck silently. An explicit 0 each tick makes",
+    "     * missing and not-1 both mean OFF, which is what the flag expresses. */",
+    "    int on = 0;",
     "    FILE *f = fopen(\"/tmp/mud-redundant\", \"r\");",
     "    if (f) {",
     "        char buf[8];",
     "        memset(buf, 0, sizeof buf);",
-    "        if (fgets(buf, sizeof buf, f))",
-    "            cached = (buf[0] == '1') ? 1 : 0;",
+    "        if (fgets(buf, sizeof buf, f) && buf[0] == '1')",
+    "            on = 1;",
     "        fclose(f);",
     "    }",
+    "    cached = on;",
     "",
     "    return cached;",
     "}",
